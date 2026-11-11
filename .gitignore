@@ -1,0 +1,27 @@
+*.iml
+.gradle/
+.idea/
+local.properties
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+app/build/
+*.jks
+*.keystore
+.gradle-user/
+.kotlin/
+artifacts/
+review-only/
+releases/*.apk
+*.local.properties
+*.hprof
+
+# Local installations, credentials and signing material
+environment/
+.env
+.env.*
+!.env.example
+signing.properties
+*.pem
+*.key

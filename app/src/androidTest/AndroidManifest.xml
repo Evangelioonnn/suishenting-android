@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- AGP rewrites the first instrumentation entry to the configured default runner. -->
+    <instrumentation android:name="androidx.test.runner.AndroidJUnitRunner"
+        android:targetPackage="com.museum.reader" />
+    <instrumentation
+        android:name="com.museum.reader.acceptance.ProcessDraftRunner"
+        android:targetPackage="com.museum.reader" />
+    <instrumentation android:name="com.museum.reader.acceptance.UpgradeSeedRunner"
+        android:targetPackage="com.museum.reader" android:functionalTest="true" />
+    <instrumentation android:name="com.museum.reader.acceptance.UpgradeVerifyRunner"
+        android:targetPackage="com.museum.reader" android:functionalTest="true" />
+</manifest>
