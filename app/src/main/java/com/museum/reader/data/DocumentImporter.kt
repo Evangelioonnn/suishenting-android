@@ -139,11 +139,23 @@ object DocumentImporter {
         }
         val handler = object : DefaultHandler() {
             private var paragraph: StringBuilder? = null
+            private val outerParagraphs = java.util.ArrayDeque<StringBuilder>()
             private var insideText = false
+
+            private fun finishSpan() {
+                paragraph?.toString()?.trim()?.takeIf(String::isNotEmpty)?.let(paragraphs::add)
+                paragraph?.setLength(0)
+            }
 
             override fun startElement(uri: String?, localName: String?, qName: String?, attributes: Attributes?) {
                 when (localName ?: qName?.substringAfter(':')) {
-                    "p" -> paragraph = StringBuilder()
+                    "p" -> {
+                        paragraph?.let { outer ->
+                            finishSpan()
+                            outerParagraphs.addLast(outer)
+                        }
+                        paragraph = StringBuilder()
+                    }
                     "t" -> insideText = true
                     "tab" -> paragraph?.append('\t')
                     "br", "cr" -> paragraph?.append('\n')
@@ -158,8 +170,8 @@ object DocumentImporter {
                 when (localName ?: qName?.substringAfter(':')) {
                     "t" -> insideText = false
                     "p" -> {
-                        paragraph?.toString()?.trim()?.takeIf(String::isNotEmpty)?.let(paragraphs::add)
-                        paragraph = null
+                        finishSpan()
+                        paragraph = if (outerParagraphs.isEmpty()) null else outerParagraphs.removeLast()
                     }
                 }
             }

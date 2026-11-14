@@ -27,6 +27,7 @@ data class StorageOverview(
     val unlinkedBytes: Long = 0, val items: List<StoredAudioInfo> = emptyList(),
     val unlinked: List<UnlinkedAudio> = emptyList(), val trash: List<TrashedDocumentInfo> = emptyList(),
     val recoveryPoints: List<RecoveryPoint> = emptyList(),
+    val warnings: List<String> = emptyList(),
 )
 data class CleanupResult(val removedReferences: Int, val deletedFiles: Int, val pendingFiles: Int)
 
@@ -52,9 +53,17 @@ class StorageMaintenance(
         val sentences = documents.keys.flatMap { dao.sentenceSummaries(it) }.associateBy { it.id }
         val audio = repository.allAudioAssets()
         val historyIds = hashSetOf<String>()
+        val invalidHistoryDocuments = hashSetOf<String>()
         for (id in documents.keys) for (value in dao.versionSnapshots(id)) run {
-            val array = JSONArray(value)
-            repeat(array.length()) { historyIds += array.getJSONObject(it).getString("id") }
+            try {
+                val references = historySentences(value)
+                require(references.all { reference -> sentences[reference.id]?.let {
+                    it.documentId == id && it.textHash == DocumentRepository.textHash(reference.text)
+                } == true })
+                historyIds += references.map { it.id }
+            } catch (_: IllegalArgumentException) {
+                invalidHistoryDocuments += id
+            }
         }
         val pending = pendingPaths()
         val inUse = inUsePaths()
@@ -65,7 +74,7 @@ class StorageMaintenance(
                 sentence?.textHash != asset.textHash || file?.isFile != true
             StoredAudioInfo(asset, documents[asset.documentId]?.title ?: "不可用文稿", sentence?.text.orEmpty(),
                 file?.takeIf { it.isFile }?.length() ?: 0L, old,
-                documents[asset.documentId]?.trashedAt != null || (old && asset.sentenceId in historyIds) ||
+                asset.documentId in invalidHistoryDocuments || documents[asset.documentId]?.trashedAt != null || (old && asset.sentenceId in historyIds) ||
                     file?.path in pending || file?.path in inUse, file?.isFile != true)
         }
         val references = items.mapNotNull { ownedPath(it.audio.path) }.toSet()
@@ -91,7 +100,9 @@ class StorageMaintenance(
             it.isFile && it.extension == "museumreader" && it.canonicalFile.parentFile == pointsRoot
         }.map { RecoveryPoint(it.path, it.length(), it.lastModified()) }.sortedByDescending { it.createdAt }
         return StorageOverview(recordingBytes, cloudBytes, oldBytes, unlinked.sumOf { it.bytes },
-            items, unlinked, trash, points)
+            items, unlinked, trash, points, invalidHistoryDocuments.map {
+                "《${documents[it]?.title.orEmpty().take(60)}》有历史关联不完整，相关旧音频已保护，请保留原备份后再处理。"
+            })
     }
 
     suspend fun restoreAudio(id: String) {

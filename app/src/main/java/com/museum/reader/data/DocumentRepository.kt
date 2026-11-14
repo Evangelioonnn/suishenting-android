@@ -116,6 +116,7 @@ class DocumentRepository(
         LegacyAudioRecovery(context, this).recover(id, dao.allSentences(id))
 
     suspend fun create(title: String, text: String, source: DocumentSource): ReaderDocument {
+        checkedName(title, "文稿名称")
         require(text.length <= 1_000_000) { "文稿超过 100 万字，请拆分后导入" }
         val segmented = TextSegmenter.segment(text)
         require(segmented.normalizedText.length <= 1_000_000) { "文稿整理后超过 100 万字，请拆分后保存" }
@@ -137,11 +138,13 @@ class DocumentRepository(
     }
 
     suspend fun rename(id: String, title: String) {
+        checkedName(title, "文稿名称")
         val current = dao.rawDocument(id) ?: return
         dao.updateTitle(id, title.trim().ifBlank { current.title }, System.currentTimeMillis())
     }
 
     suspend fun updateContent(id: String, title: String, text: String) {
+        checkedName(title, "文稿名称")
         require(text.length <= 1_000_000) { "文稿超过 100 万字，请拆分后保存" }
         val segmented = TextSegmenter.segment(text)
         require(segmented.normalizedText.length <= 1_000_000) { "文稿整理后超过 100 万字，请拆分后保存" }
@@ -203,6 +206,7 @@ class DocumentRepository(
 
     suspend fun draft(id: String) = dao.draft(id)
     suspend fun saveDraft(draft: com.museum.reader.data.db.EditorDraftEntity) {
+        checkedName(draft.title, "草稿名称")
         require(draft.text.length <= 1_000_000) { "草稿超过 100 万字" }
         dao.putDraft(draft)
     }
@@ -264,18 +268,29 @@ class DocumentRepository(
         return !exists
     }
 
-    suspend fun playlists(): List<ReaderPlaylist> = dao.playlists().map { playlist ->
-        ReaderPlaylist(playlist.id, playlist.title, dao.playlistItems(playlist.id).map { it.documentId }, playlist.lastDocumentId)
+    suspend fun playlists(): List<ReaderPlaylist> {
+        val oversized = dao.oversizedPlaylistIds().toSet()
+        return dao.playlists().map { playlist ->
+            ReaderPlaylist(playlist.id, playlist.title.take(MAX_NAME_CHARACTERS), dao.playlistItems(playlist.id).map { it.documentId },
+                playlist.lastDocumentId, playlist.id in oversized || playlist.title.length > MAX_NAME_CHARACTERS)
+        }
     }
 
     suspend fun savePlaylist(id: String?, title: String, documentIds: List<String>): ReaderPlaylist {
+        checkedName(title, "路线名称")
         val playlistId = id ?: UUID.randomUUID().toString()
         val now = System.currentTimeMillis()
         database.withTransaction {
             val previous = dao.playlists().firstOrNull { it.id == playlistId }
             val createdAt = previous?.createdAt ?: now
-            dao.putPlaylist(PlaylistEntity(playlistId, title.trim().ifBlank { "讲解路线" }, createdAt, now,
-                previous?.lastDocumentId?.takeIf { it in documentIds }))
+            val lastDocumentId = previous?.lastDocumentId?.takeIf { it in documentIds }
+            if (previous != null && (previous.id in dao.oversizedPlaylistIds() || previous.title.length > MAX_NAME_CHARACTERS) &&
+                title == previous.title.take(MAX_NAME_CHARACTERS)) {
+                // Reordering an old oversized route must not silently replace its full stored name.
+                dao.updatePlaylistKeepingTitle(playlistId, now, lastDocumentId)
+            } else {
+                dao.putPlaylist(PlaylistEntity(playlistId, title.trim().ifBlank { "讲解路线" }, createdAt, now, lastDocumentId))
+            }
             dao.clearPlaylist(playlistId)
             dao.putPlaylistItems(documentIds.distinct().mapIndexed { index, documentId ->
                 PlaylistItemEntity(playlistId, documentId, index)
@@ -359,7 +374,8 @@ class DocumentRepository(
 
     internal fun parseBackup(payload: String): BackupGraph = BackupStore(database).parse(payload)
 
-    internal suspend fun previewBackup(graph: BackupGraph): BackupPreview = BackupStore(database).preview(graph)
+    internal suspend fun previewBackup(graph: BackupGraph, audio: List<SentenceAudio> = emptyList()): BackupPreview =
+        BackupStore(database).preview(graph, audio)
 
     internal suspend fun restoreBackup(
         graph: BackupGraph,

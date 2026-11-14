@@ -45,6 +45,7 @@ internal fun StorageScreen(
                 Text("本人录音 ${bytesLabel(storage.recordingBytes)} · 云缓存 ${bytesLabel(storage.cloudBytes)}")
                 Text("旧音频 ${bytesLabel(storage.oldBytes)} · 待确认文件 ${bytesLabel(storage.unlinkedBytes)}")
                 Text("按实际文件去重统计。恢复区、历史版本、待确认录音和正在播放的文件受保护。", style = MaterialTheme.typography.bodySmall)
+                storage.warnings.forEach { Text(it, color = MaterialTheme.colorScheme.error) }
                 OutlinedButton(onClick = { action = StorageAction.Cloud(cloud.map { it.audio }, cloud.distinctBy { it.audio.path }.sumOf { it.bytes }) },
                     enabled = cloud.isNotEmpty(), modifier = Modifier.fillMaxWidth()) {
                     Text("清理可移除的云缓存 · ${cloud.size} 条")

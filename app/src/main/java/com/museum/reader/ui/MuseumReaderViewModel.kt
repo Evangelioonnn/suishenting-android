@@ -878,10 +878,18 @@ class MuseumReaderViewModel(application: Application) : AndroidViewModel(applica
         PlaybackController.send(getApplication(), PlaybackCommand.Clear)
         mutableState.value = mutableState.value.copy(isBusy = true, pendingBackup = null, busyLabel = "正在恢复备份…")
         viewModelScope.launch(operationErrors) {
+            var committed = false
             try {
                 val result = withContext(Dispatchers.IO) {
                     backupManager.restore(pending, policy, restoreSettings, acceptWarnings = true)
                 }
+                committed = true
+                settingsReturnPage = AppPage.HOME
+                editorReturnPage = AppPage.HOME
+                ++loadGeneration
+                mutableState.value = mutableState.value.copy(page = AppPage.HOME, currentDocument = null,
+                    content = SegmentedText("", emptyList()), readerLayout = null, bookmarks = emptyList(),
+                    versions = emptyList(), rangeSelectionStage = null)
                 val documents = withContext(Dispatchers.IO) { repository.summaries() }
                 val playlists = withContext(Dispatchers.IO) { repository.playlists() }
                 currentAudio = emptyList()
@@ -895,7 +903,10 @@ class MuseumReaderViewModel(application: Application) : AndroidViewModel(applica
                 refreshCloudState()
                 publishDefaults()
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (error: Exception) { showFailure(UserOperation.BACKUP_RESTORE, error) }
+            catch (error: Exception) {
+                if (committed) showFailure(UserOperation.OPEN, error, prefix = "备份已恢复，资料已保留。")
+                else showFailure(UserOperation.BACKUP_RESTORE, error)
+            }
             finally { PlaybackController.setMaintenance(getApplication(), false) }
         }
     }

@@ -8,6 +8,18 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 class DocumentImporterTest {
+    @Test fun nestedTextboxesPreserveEverySurroundingTextSpanInOrder() {
+        val xml = """<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:v="urn:schemas-microsoft-com:vml"><w:body>
+            <w:p><w:r><w:t>外层前文</w:t></w:r><w:r><w:pict><v:shape><v:textbox><w:txbxContent>
+            <w:p><w:r><w:t>框内前文</w:t></w:r><w:r><w:pict><v:shape><v:textbox><w:txbxContent>
+            <w:p><w:r><w:t>深层文字</w:t></w:r></w:p>
+            </w:txbxContent></v:textbox></v:shape></w:pict></w:r><w:r><w:t>框内后文</w:t></w:r></w:p>
+            </w:txbxContent></v:textbox></v:shape></w:pict></w:r><w:r><w:t>外层后文</w:t></w:r></w:p>
+            <w:p><w:r><w:t>下一段</w:t></w:r></w:p></w:body></w:document>""".trimIndent()
+        assertEquals("外层前文\n\n框内前文\n\n深层文字\n\n框内后文\n\n外层后文\n\n下一段",
+            DocumentImporter.parseWordXml(xml.toByteArray()))
+    }
+
     @Test
     fun `decodes utf8 bom and gb18030`() {
         val text = "三星堆讲解词"

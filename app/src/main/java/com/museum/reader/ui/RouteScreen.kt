@@ -88,6 +88,7 @@ internal fun LibraryScreen(
                 enabled = title.isNotBlank() && selected.isNotEmpty(),
                 modifier = Modifier.heightIn(min = 48.dp)) { Text("保存路线") }
         }) {
+                if (route?.needsNameReview == true) Text("原路线名称过长，当前为缩略显示。只调整顺序会保留原名称；重新输入名称后保存可修正。")
                 OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("路线名称") },
                     modifier = Modifier.fillMaxWidth())
                 Text("已选顺序")

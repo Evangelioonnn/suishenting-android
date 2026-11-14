@@ -82,8 +82,21 @@ interface ReaderDao {
     @Query("DELETE FROM bookmarks WHERE documentId = :documentId AND sentenceId = :sentenceId")
     suspend fun deleteBookmark(documentId: String, sentenceId: String)
 
-    @Query("SELECT * FROM playlists ORDER BY updatedAt DESC")
+    @Query("SELECT id, substr(title, 1, 1000) AS title, createdAt, updatedAt, lastDocumentId FROM playlists ORDER BY updatedAt DESC")
     suspend fun playlists(): List<PlaylistEntity>
+
+    @Query("SELECT id FROM playlists WHERE length(title) > 1000")
+    suspend fun oversizedPlaylistIds(): List<String>
+
+    @Query("UPDATE playlists SET updatedAt = :time, lastDocumentId = :lastDocumentId WHERE id = :id")
+    suspend fun updatePlaylistKeepingTitle(id: String, time: Long, lastDocumentId: String?)
+
+    @Query("""SELECT EXISTS(
+        SELECT 1 FROM documents WHERE length(title) > 1000
+        UNION ALL SELECT 1 FROM playlists WHERE length(title) > 1000
+        UNION ALL SELECT 1 FROM document_versions WHERE length(title) > 1000
+        UNION ALL SELECT 1 FROM editor_drafts WHERE length(title) > 1000)""")
+    suspend fun hasOversizedNames(): Boolean
 
     @Query("SELECT * FROM playlist_items WHERE playlistId = :playlistId ORDER BY position")
     suspend fun playlistItems(playlistId: String): List<PlaylistItemEntity>
@@ -123,6 +136,9 @@ interface ReaderDao {
 
     @Query("UPDATE audio_assets SET archivedAt = :time WHERE sentenceId = :sentenceId AND kind = :kind AND provider IS :provider AND voiceId IS :voiceId AND id != :exceptId AND archivedAt IS NULL")
     suspend fun archivePreviousAudio(sentenceId: String, kind: String, provider: String?, voiceId: String?, exceptId: String, time: Long)
+
+    @Query("UPDATE audio_assets SET archivedAt = :time WHERE sentenceId = :sentenceId AND kind = 'RECORDING' AND id != :exceptId AND archivedAt IS NULL")
+    suspend fun archivePreviousRecording(sentenceId: String, exceptId: String, time: Long)
 
     @Upsert
     suspend fun putDraft(draft: EditorDraftEntity)

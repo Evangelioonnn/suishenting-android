@@ -204,7 +204,7 @@ class BackupManager(
             require(entries.keys.all { it in usedEntries }) { "备份有未在清单登记的音频" }
             AudioFiles.writeAtomic(File(directory, "manifest.json"), graph.root.toString())
             AudioFiles.writeAtomic(File(directory, "journal.json"), JSONObject().put("id", directory.name).put("phase", "prepared").toString())
-            val preview = repository.previewBackup(graph).copy(audioCount = audio.size, warnings = warnings)
+            val preview = repository.previewBackup(graph, audio).copy(audioCount = audio.size, warnings = warnings)
             return PreparedBackup(preview, graph, directory, audio)
         } catch (error: Throwable) {
             removeStaging(directory)
@@ -225,7 +225,7 @@ class BackupManager(
             recoverInterruptedRestores()
             return BackupImportResult(0, null, warnings = listOf("这次恢复已经提交，没有重复导入"))
         }
-        require(repository.previewBackup(prepared.graph).localFingerprint == prepared.preview.localFingerprint) {
+        require(repository.previewBackup(prepared.graph, prepared.audio).localFingerprint == prepared.preview.localFingerprint) {
             "本机文稿已变化，请重新选择备份并预览"
         }
         var recoveryPoint: String? = null

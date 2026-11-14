@@ -56,6 +56,7 @@ data class ReaderPlaylist(
     val title: String,
     val documentIds: List<String>,
     val lastDocumentId: String? = null,
+    val needsNameReview: Boolean = false,
 )
 
 enum class AudioKind { CLOUD, RECORDING }

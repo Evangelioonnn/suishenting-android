@@ -36,6 +36,9 @@ internal fun BackupRestoreDialog(
                 Text("新增 " + preview.newDocuments + " 篇，相同 " + preview.sameDocuments + " 篇，冲突 " +
                     preview.conflictTitles.size + " 篇；可恢复音频 " + preview.audioCount + " 条。")
                 if (preview.conflictTitles.isNotEmpty()) {
+                    if (preview.audioConflictTitles.isNotEmpty()) {
+                        Text("其中有 ${preview.audioConflictTitles.size} 篇录音或云声音与本机不同。默认保留本机内容及音频；需要旧音频时可另存副本或明确覆盖。")
+                    }
                     Text("冲突文稿", style = MaterialTheme.typography.titleMedium)
                     preview.conflictTitles.take(20).forEach { Text("• " + it) }
                     if (preview.conflictTitles.size > 20) Text("其余 " + (preview.conflictTitles.size - 20) + " 篇按相同方式处理")
