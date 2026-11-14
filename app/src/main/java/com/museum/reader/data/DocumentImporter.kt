@@ -124,6 +124,14 @@ object DocumentImporter {
         return parseWordXml(xml).trim()
     }
 
+    private data class WordEvent(val kind: String, val text: String = "")
+    private data class MarkupBranch(val fallback: Boolean, val supported: Boolean,
+        val events: MutableList<WordEvent> = mutableListOf())
+    private class MarkupAlternative {
+        val branches = mutableListOf<MarkupBranch>()
+        var active: MarkupBranch? = null
+    }
+
     internal fun parseWordXml(xml: ByteArray): String {
         require(xml.size <= MAX_DOCUMENT_XML_BYTES) { "DOCX 正文解压后过大，请精简或拆分文件" }
         // DOCX does not require DTD. Reject it even where Android's SAX feature is unsupported.
@@ -141,38 +149,106 @@ object DocumentImporter {
             private var paragraph: StringBuilder? = null
             private val outerParagraphs = java.util.ArrayDeque<StringBuilder>()
             private var insideText = false
+            private var sourceTextDepth = 0
+            private val alternatives = java.util.ArrayDeque<MarkupAlternative>()
+            private val namespaces = hashMapOf<String, java.util.ArrayDeque<String>>()
+            private val compatibleNamespaces = setOf(
+                "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+                "http://schemas.microsoft.com/office/word/2010/wordprocessingShape",
+                "http://schemas.microsoft.com/office/word/2010/wordprocessingGroup",
+                "urn:schemas-microsoft-com:vml",
+            )
+
+            override fun startPrefixMapping(prefix: String?, uri: String?) {
+                namespaces.getOrPut(prefix.orEmpty()) { java.util.ArrayDeque() }.addLast(uri.orEmpty())
+            }
+            override fun endPrefixMapping(prefix: String?) {
+                namespaces[prefix.orEmpty()]?.removeLast()
+            }
 
             private fun finishSpan() {
                 paragraph?.toString()?.trim()?.takeIf(String::isNotEmpty)?.let(paragraphs::add)
                 paragraph?.setLength(0)
             }
 
-            override fun startElement(uri: String?, localName: String?, qName: String?, attributes: Attributes?) {
-                when (localName ?: qName?.substringAfter(':')) {
-                    "p" -> {
+            private fun emit(event: WordEvent) {
+                val alternative = alternatives.peekLast()
+                if (alternative != null) {
+                    alternative.active?.events?.add(event)
+                    return
+                }
+                when (event.kind) {
+                    "p+" -> {
                         paragraph?.let { outer ->
                             finishSpan()
                             outerParagraphs.addLast(outer)
                         }
                         paragraph = StringBuilder()
                     }
-                    "t" -> insideText = true
+                    "t+" -> insideText = true
+                    "t-" -> insideText = false
+                    "characters" -> if (insideText) paragraph?.append(event.text)
                     "tab" -> paragraph?.append('\t')
                     "br", "cr" -> paragraph?.append('\n')
+                    "p-" -> {
+                        finishSpan()
+                        paragraph = if (outerParagraphs.isEmpty()) null else outerParagraphs.removeLast()
+                    }
+                }
+            }
+
+            override fun startElement(uri: String?, localName: String?, qName: String?, attributes: Attributes?) {
+                val name = localName ?: qName?.substringAfter(':')
+                if (uri == "http://schemas.openxmlformats.org/markup-compatibility/2006") {
+                    when (name) {
+                        "AlternateContent" -> {
+                            require(alternatives.size < 64) { "DOCX 兼容内容嵌套过多，请精简后重试" }
+                            alternatives.addLast(MarkupAlternative())
+                        }
+                        "Choice", "Fallback" -> {
+                            val frame = alternatives.peekLast() ?: error("DOCX 兼容分支结构无效")
+                            require(frame.active == null) { "DOCX 兼容分支结构无效" }
+                            val required = attributes?.getValue("Requires").orEmpty().split(Regex("\\s+")).filter(String::isNotEmpty)
+                            val supported = required.all { namespaces[it]?.peekLast() in compatibleNamespaces }
+                            val branch = MarkupBranch(name == "Fallback", supported)
+                            frame.branches.add(branch); frame.active = branch
+                        }
+                    }
+                    return
+                }
+                when (name) {
+                    "p" -> emit(WordEvent("p+"))
+                    "t" -> { sourceTextDepth++; emit(WordEvent("t+")) }
+                    "tab", "br", "cr" -> emit(WordEvent(name))
                 }
             }
 
             override fun characters(ch: CharArray, start: Int, length: Int) {
-                if (insideText) paragraph?.append(ch, start, length)
+                if (sourceTextDepth > 0) emit(WordEvent("characters", String(ch, start, length)))
             }
 
             override fun endElement(uri: String?, localName: String?, qName: String?) {
-                when (localName ?: qName?.substringAfter(':')) {
-                    "t" -> insideText = false
-                    "p" -> {
-                        finishSpan()
-                        paragraph = if (outerParagraphs.isEmpty()) null else outerParagraphs.removeLast()
+                val name = localName ?: qName?.substringAfter(':')
+                if (uri == "http://schemas.openxmlformats.org/markup-compatibility/2006") {
+                    when (name) {
+                        "Choice", "Fallback" -> alternatives.peekLast()?.active = null
+                        "AlternateContent" -> {
+                            val frame = alternatives.removeLast()
+                            // A supported shape can contain only an image. Prefer a branch with
+                            // actual text so a readable fallback is not discarded with that image.
+                            fun MarkupBranch.readable() = events.any { it.kind == "characters" && it.text.isNotBlank() }
+                            val selected = frame.branches.firstOrNull { !it.fallback && it.supported && it.readable() }
+                                ?: frame.branches.firstOrNull { it.fallback && it.readable() }
+                                ?: frame.branches.firstOrNull { it.readable() }
+                                ?: frame.branches.firstOrNull { it.fallback } ?: frame.branches.firstOrNull()
+                            selected?.events?.forEach(::emit)
+                        }
                     }
+                    return
+                }
+                when (name) {
+                    "t" -> { emit(WordEvent("t-")); sourceTextDepth-- }
+                    "p" -> emit(WordEvent("p-"))
                 }
             }
         }

@@ -27,13 +27,17 @@ data class EditorUiState(
     val savedInputTitle: String = "",
     val savedInputText: String = "",
     val dirty: Boolean = false,
+    val retainedTitle: String? = null,
+    val renamingVersion: Boolean = false,
+    val versionNameError: String? = null,
 ) {
     val draftStatus: String get() = when {
         choosingDraft -> "正在放弃未提交草稿…"
+        renamingVersion -> "正在修正历史版本名称…"
         saving -> "正在保存正式文稿…"
         error != null -> error
-        !dirty -> "正式文稿已保存"
-        persistedRevision == revision -> "草稿已保存，尚未提交正式文稿"
+        !dirty -> if (retainedTitle != null) "旧名称过长，未改名时保留原名" else "正式文稿已保存"
+        persistedRevision == revision -> if (retainedTitle != null) "草稿已保存，旧名称原值保留" else "草稿已保存，尚未提交正式文稿"
         else -> "草稿正在保存…"
     }
 }
@@ -70,8 +74,8 @@ class EditorController(
                 val versions = withContext(Dispatchers.IO) { repository.versions(id) }
                 if (request != opening) return@launch
                 mutableState.value = EditorUiState(document = loaded, title = loaded.title, text = loaded.text,
-                    savedInputTitle = loaded.title, savedInputText = loaded.text, versions = versions,
-                    installRevision = ++install, pendingDraft = draft?.takeIf { it.title != loaded.title || it.text != loaded.text })
+                    savedInputTitle = loaded.title, savedInputText = loaded.text, versions = versions, retainedTitle = loaded.legacyTitle,
+                    installRevision = ++install, pendingDraft = draft?.takeIf { it.title != (loaded.legacyTitle ?: loaded.title) || it.text != loaded.text })
                 ready()
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) {
@@ -86,12 +90,16 @@ class EditorController(
 
     fun change(title: String, text: String) {
         val current = mutableState.value
+        if (title.length > MAX_NAME_CHARACTERS) {
+            mutableState.value = current.copy(error = "文稿名称不能超过 1000 字，请缩短名称后重试"); return
+        }
         if (text.length > 1_000_000) {
             mutableState.value = current.copy(error = "正文超过 100 万字，请拆分后输入"); return
         }
         if (current.title == title && current.text == text) return
         mutableState.value = current.copy(title = title, text = text, revision = current.revision + 1,
-            dirty = title != current.savedInputTitle || text != current.savedInputText, error = null)
+            dirty = title != current.savedInputTitle || text != current.savedInputText, error = null,
+            retainedTitle = current.retainedTitle.takeIf { current.title == title })
     }
     fun position(start: Int, end: Int, scroll: Int) {
         val s = mutableState.value
@@ -104,7 +112,8 @@ class EditorController(
         val draft = s.pendingDraft ?: return
         if (s.saving || s.choosingDraft) return
         val request = opening
-        if (restore) mutableState.value = s.copy(title = draft.title, text = draft.text,
+        if (restore) mutableState.value = s.copy(title = namePreview(draft.title), text = draft.text,
+            retainedTitle = draft.title.takeIf { it.length > MAX_NAME_CHARACTERS },
             selectionStart = draft.selectionStart.coerceIn(0, draft.text.length),
             selectionEnd = draft.selectionEnd.coerceIn(0, draft.text.length),
             revision = s.revision + 1, persistedRevision = s.revision + 1,
@@ -136,7 +145,7 @@ class EditorController(
         if (!s.dirty || s.pendingDraft != null || s.persistedRevision == s.revision) return@withLock
         try {
             withContext(Dispatchers.IO) { repository.saveDraft(
-                EditorDraftEntity(id, s.title, s.text, s.selectionStart, s.selectionEnd, System.currentTimeMillis())) }
+                EditorDraftEntity(id, s.title, s.text, s.selectionStart, s.selectionEnd, System.currentTimeMillis()), s.retainedTitle) }
             val latest = mutableState.value
             if (owns(id, request) && latest.revision == s.revision)
                 mutableState.value = latest.copy(persistedRevision = s.revision, error = null)
@@ -158,7 +167,7 @@ class EditorController(
             try {
                 val loaded = writes.withLock {
                     withContext(Dispatchers.IO) {
-                        repository.updateContent(id, submitted.title, submitted.text)
+                        repository.updateContent(id, submitted.title, submitted.text, submitted.retainedTitle)
                         committed = true
                         repository.load(id) ?: error("保存后无法读取文稿")
                     }
@@ -177,7 +186,7 @@ class EditorController(
                     else {
                         val current = mutableState.value
                         withContext(Dispatchers.IO) { repository.saveDraft(EditorDraftEntity(id, current.title,
-                            current.text, current.selectionStart, current.selectionEnd, System.currentTimeMillis())) }
+                            current.text, current.selectionStart, current.selectionEnd, System.currentTimeMillis()), current.retainedTitle) }
                         if (owns(id, request) && mutableState.value.revision == current.revision)
                             mutableState.value = mutableState.value.copy(persistedRevision = current.revision)
                     }
@@ -246,6 +255,38 @@ class EditorController(
             catch (_: Exception) {
                 if (owns(id, request)) mutableState.value = mutableState.value.copy(saving = false,
                     error = if (committed) "历史版本已恢复，页面刷新未完成，请返回后重新打开" else "恢复失败，请检查空间后重新选择版本")
+            }
+        }
+    }
+
+    fun clearVersionNameError() {
+        mutableState.value = mutableState.value.copy(versionNameError = null)
+    }
+
+    fun renameVersion(versionId: String, title: String, after: () -> Unit) {
+        val s = mutableState.value; val id = s.document?.id ?: return
+        val request = opening
+        if (s.saving) return
+        mutableState.value = s.copy(saving = true, renamingVersion = true, versionNameError = null)
+        scope.launch {
+            var committed = false
+            try {
+                val versions = writes.withLock {
+                    withContext(Dispatchers.IO) {
+                        repository.renameVersion(id, versionId, title)
+                        committed = true
+                        repository.versions(id)
+                    }
+                }
+                if (owns(id, request)) {
+                    mutableState.value = mutableState.value.copy(saving = false, renamingVersion = false, versions = versions)
+                    after()
+                }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) {
+                if (owns(id, request)) mutableState.value = mutableState.value.copy(saving = false, renamingVersion = false,
+                    versionNameError = if (committed) "历史名称已修改，列表刷新未完成，请返回后重新打开"
+                        else "历史名称未修改，请检查名称和存储空间后重试；原版本仍保留")
             }
         }
     }

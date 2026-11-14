@@ -10,19 +10,19 @@ import androidx.room.Upsert
 
 @Dao
 interface ReaderDao {
-    @Query("SELECT id, title, source, CASE WHEN length(text) > 50000 THEN '' ELSE text END AS text, createdAt, updatedAt, lastSentence, isPinned, speechRate, sentencePauseMs, paragraphPauseMs, trashedAt FROM documents WHERE trashedAt IS NULL ORDER BY isPinned DESC, updatedAt DESC")
+    @Query("SELECT id, CASE WHEN length(title) > 50000 THEN '' ELSE title END AS title, source, CASE WHEN length(text) > 50000 THEN '' ELSE text END AS text, createdAt, updatedAt, lastSentence, isPinned, speechRate, sentencePauseMs, paragraphPauseMs, trashedAt FROM documents WHERE trashedAt IS NULL ORDER BY isPinned DESC, updatedAt DESC")
     suspend fun rawDocuments(): List<DocumentEntity>
 
-    @Query("SELECT id, title, source, CASE WHEN length(text) > 50000 THEN '' ELSE text END AS text, createdAt, updatedAt, lastSentence, isPinned, speechRate, sentencePauseMs, paragraphPauseMs, trashedAt FROM documents WHERE id = :id AND trashedAt IS NULL")
+    @Query("SELECT id, CASE WHEN length(title) > 50000 THEN '' ELSE title END AS title, source, CASE WHEN length(text) > 50000 THEN '' ELSE text END AS text, createdAt, updatedAt, lastSentence, isPinned, speechRate, sentencePauseMs, paragraphPauseMs, trashedAt FROM documents WHERE id = :id AND trashedAt IS NULL")
     suspend fun rawDocument(id: String): DocumentEntity?
 
     @Upsert
     suspend fun putDocument(document: DocumentEntity)
 
-    @Query("SELECT id, title, source, CASE WHEN length(text) > 50000 THEN '' ELSE text END AS text, createdAt, updatedAt, lastSentence, isPinned, speechRate, sentencePauseMs, paragraphPauseMs, trashedAt FROM documents WHERE id = :id")
+    @Query("SELECT id, CASE WHEN length(title) > 50000 THEN '' ELSE title END AS title, source, CASE WHEN length(text) > 50000 THEN '' ELSE text END AS text, createdAt, updatedAt, lastSentence, isPinned, speechRate, sentencePauseMs, paragraphPauseMs, trashedAt FROM documents WHERE id = :id")
     suspend fun rawAnyDocument(id: String): DocumentEntity?
 
-    @Query("SELECT id, title, source, CASE WHEN length(text) > 50000 THEN '' ELSE text END AS text, createdAt, updatedAt, lastSentence, isPinned, speechRate, sentencePauseMs, paragraphPauseMs, trashedAt FROM documents ORDER BY createdAt")
+    @Query("SELECT id, CASE WHEN length(title) > 50000 THEN '' ELSE title END AS title, source, CASE WHEN length(text) > 50000 THEN '' ELSE text END AS text, createdAt, updatedAt, lastSentence, isPinned, speechRate, sentencePauseMs, paragraphPauseMs, trashedAt FROM documents ORDER BY createdAt")
     suspend fun rawDocumentsIncludingTrash(): List<DocumentEntity>
 
     @Update
@@ -67,8 +67,11 @@ interface ReaderDao {
     @Upsert
     suspend fun putVersion(version: DocumentVersionEntity)
 
-    @Query("SELECT id, documentId, title, CASE WHEN length(text) > 50000 THEN '' ELSE text END AS text, createdAt, CASE WHEN length(sentenceSnapshot) > 50000 THEN '' ELSE sentenceSnapshot END AS sentenceSnapshot FROM document_versions WHERE documentId = :documentId ORDER BY createdAt DESC")
+    @Query("SELECT id, documentId, CASE WHEN length(title) > 50000 THEN '' ELSE title END AS title, CASE WHEN length(text) > 50000 THEN '' ELSE text END AS text, createdAt, CASE WHEN length(sentenceSnapshot) > 50000 THEN '' ELSE sentenceSnapshot END AS sentenceSnapshot FROM document_versions WHERE documentId = :documentId ORDER BY createdAt DESC")
     suspend fun rawVersions(documentId: String): List<DocumentVersionEntity>
+
+    @Query("UPDATE document_versions SET title = :title WHERE id = :id AND documentId = :documentId")
+    suspend fun updateVersionTitle(documentId: String, id: String, title: String): Int
 
     @Query("DELETE FROM document_versions WHERE id IN (SELECT id FROM document_versions WHERE documentId = :documentId ORDER BY createdAt DESC LIMIT -1 OFFSET :keep)")
     suspend fun trimVersions(documentId: String, keep: Int)
@@ -91,12 +94,13 @@ interface ReaderDao {
     @Query("UPDATE playlists SET updatedAt = :time, lastDocumentId = :lastDocumentId WHERE id = :id")
     suspend fun updatePlaylistKeepingTitle(id: String, time: Long, lastDocumentId: String?)
 
-    @Query("""SELECT EXISTS(
-        SELECT 1 FROM documents WHERE length(title) > 1000
-        UNION ALL SELECT 1 FROM playlists WHERE length(title) > 1000
-        UNION ALL SELECT 1 FROM document_versions WHERE length(title) > 1000
-        UNION ALL SELECT 1 FROM editor_drafts WHERE length(title) > 1000)""")
-    suspend fun hasOversizedNames(): Boolean
+    @Query("""SELECT substr(title, 1, 1001) FROM documents
+        UNION ALL SELECT substr(title, 1, 1001) FROM playlists
+        UNION ALL SELECT substr(title, 1, 1001) FROM document_versions
+        UNION ALL SELECT substr(title, 1, 1001) FROM editor_drafts""")
+    suspend fun namePreviews(): List<String>
+
+    suspend fun hasOversizedNames(): Boolean = namePreviews().any { it.length > 1000 }
 
     @Query("SELECT * FROM playlist_items WHERE playlistId = :playlistId ORDER BY position")
     suspend fun playlistItems(playlistId: String): List<PlaylistItemEntity>
@@ -143,13 +147,13 @@ interface ReaderDao {
     @Upsert
     suspend fun putDraft(draft: EditorDraftEntity)
 
-    @Query("SELECT documentId, title, CASE WHEN length(text) > 50000 THEN '' ELSE text END AS text, selectionStart, selectionEnd, updatedAt FROM editor_drafts WHERE documentId = :documentId")
+    @Query("SELECT documentId, CASE WHEN length(title) > 50000 THEN '' ELSE title END AS title, CASE WHEN length(text) > 50000 THEN '' ELSE text END AS text, selectionStart, selectionEnd, updatedAt FROM editor_drafts WHERE documentId = :documentId")
     suspend fun rawDraft(documentId: String): EditorDraftEntity?
 
     @Query("DELETE FROM editor_drafts WHERE documentId = :documentId")
     suspend fun deleteDraft(documentId: String)
 
-    @Query("SELECT documentId, title, CASE WHEN length(text) > 50000 THEN '' ELSE text END AS text, selectionStart, selectionEnd, updatedAt FROM editor_drafts")
+    @Query("SELECT documentId, CASE WHEN length(title) > 50000 THEN '' ELSE title END AS title, CASE WHEN length(text) > 50000 THEN '' ELSE text END AS text, selectionStart, selectionEnd, updatedAt FROM editor_drafts")
     suspend fun rawAllDrafts(): List<EditorDraftEntity>
 
     @Upsert
@@ -164,10 +168,10 @@ interface ReaderDao {
     @Query("DELETE FROM audio_assets WHERE id = :id")
     suspend fun deleteAudio(id: String)
 
-    @Query("SELECT id, title, source, '' AS text, createdAt, updatedAt, lastSentence, isPinned, speechRate, sentencePauseMs, paragraphPauseMs, trashedAt FROM documents WHERE trashedAt IS NULL ORDER BY isPinned DESC, updatedAt DESC")
+    @Query("SELECT id, substr(title, 1, 1001) AS title, source, '' AS text, createdAt, updatedAt, lastSentence, isPinned, speechRate, sentencePauseMs, paragraphPauseMs, trashedAt FROM documents WHERE trashedAt IS NULL ORDER BY isPinned DESC, updatedAt DESC")
     suspend fun documentSummaries(): List<DocumentEntity>
 
-    @Query("SELECT id, title, source, '' AS text, createdAt, updatedAt, lastSentence, isPinned, speechRate, sentencePauseMs, paragraphPauseMs, trashedAt FROM documents ORDER BY createdAt")
+    @Query("SELECT id, substr(title, 1, 1001) AS title, source, '' AS text, createdAt, updatedAt, lastSentence, isPinned, speechRate, sentencePauseMs, paragraphPauseMs, trashedAt FROM documents ORDER BY createdAt")
     suspend fun documentSummariesIncludingTrash(): List<DocumentEntity>
 
     @Query("SELECT id, documentId, ordinal, paragraphIndex, substr(text, 1, 240) AS text, textHash, retiredAt FROM sentences WHERE documentId = :documentId ORDER BY ordinal")
@@ -193,6 +197,15 @@ interface ReaderDao {
         coalesce((SELECT sum(length(CAST(text AS BLOB)) + coalesce(length(CAST(sentenceSnapshot AS BLOB)), 0)) FROM document_versions), 0) +
         coalesce((SELECT sum(length(CAST(text AS BLOB))) FROM editor_drafts), 0)""")
     suspend fun backupTextLowerBound(): Long
+
+    @Query("SELECT substr(title, :start, 40000) FROM documents WHERE id = :id")
+    suspend fun documentTitleChunk(id: String, start: Int): String?
+
+    @Query("SELECT substr(title, :start, 40000) FROM document_versions WHERE id = :id")
+    suspend fun versionTitleChunk(id: String, start: Int): String?
+
+    @Query("SELECT substr(title, :start, 40000) FROM editor_drafts WHERE documentId = :id")
+    suspend fun draftTitleChunk(id: String, start: Int): String?
 
     @Query("SELECT substr(text, :start, 40000) FROM documents WHERE id = :id")
     suspend fun documentTextChunk(id: String, start: Int): String?
@@ -225,7 +238,8 @@ interface ReaderDao {
     suspend fun activeSentence(id: String): SentenceEntity? = rawActiveSentence(id)?.let { fullSentence(it) }
     @Transaction
     suspend fun versions(documentId: String): List<DocumentVersionEntity> = rawVersions(documentId).map { row ->
-        row.copy(text = if (row.text.isEmpty()) chunks { versionTextChunk(row.id, it) } else row.text,
+        row.copy(title = if (row.title.isEmpty()) chunks { versionTitleChunk(row.id, it) } else row.title,
+            text = if (row.text.isEmpty()) chunks { versionTextChunk(row.id, it) } else row.text,
             sentenceSnapshot = if (row.sentenceSnapshot == "") chunks { versionSnapshotChunk(row.id, it) } else row.sentenceSnapshot)
     }
     @Transaction
@@ -233,12 +247,14 @@ interface ReaderDao {
     @Transaction
     suspend fun allDrafts(): List<EditorDraftEntity> = rawAllDrafts().map { fullDraft(it) }
 
-    private suspend fun fullDocument(row: DocumentEntity): DocumentEntity =
-        if (row.text.isEmpty()) row.copy(text = chunks { documentTextChunk(row.id, it) }) else row
+    private suspend fun fullDocument(row: DocumentEntity): DocumentEntity = row.copy(
+        title = if (row.title.isEmpty()) chunks { documentTitleChunk(row.id, it) } else row.title,
+        text = if (row.text.isEmpty()) chunks { documentTextChunk(row.id, it) } else row.text)
     private suspend fun fullSentence(row: SentenceEntity): SentenceEntity =
         if (row.text.isEmpty()) row.copy(text = chunks { sentenceTextChunk(row.id, it) }) else row
-    private suspend fun fullDraft(row: EditorDraftEntity): EditorDraftEntity =
-        if (row.text.isEmpty()) row.copy(text = chunks { draftTextChunk(row.documentId, it) }) else row
+    private suspend fun fullDraft(row: EditorDraftEntity): EditorDraftEntity = row.copy(
+        title = if (row.title.isEmpty()) chunks { draftTitleChunk(row.documentId, it) } else row.title,
+        text = if (row.text.isEmpty()) chunks { draftTextChunk(row.documentId, it) } else row.text)
 
     /** SQLite substr uses Unicode code points, not UTF-16 offsets. Each row stays below CursorWindow limits. */
     private suspend fun chunks(read: suspend (Int) -> String?): String = buildString {

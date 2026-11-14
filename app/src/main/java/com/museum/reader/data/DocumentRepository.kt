@@ -41,6 +41,7 @@ data class DocumentVersion(
     val title: String,
     val text: String,
     val createdAt: Long,
+    val needsNameReview: Boolean = false,
 )
 
 data class BackupImportResult(
@@ -88,7 +89,7 @@ class DocumentRepository(
         migrationPreferences.edit { putBoolean(MIGRATION_KEY, true) }
     }
 
-    suspend fun summaries(): List<ReaderDocument> = dao.documentSummaries().map { it.toModel() }
+    suspend fun summaries(): List<ReaderDocument> = dao.documentSummaries().map { it.toModel(retainLegacyTitle = false) }
 
     suspend fun all(): List<ReaderDocument> = dao.allDocuments().map { it.toModel() }
 
@@ -139,11 +140,13 @@ class DocumentRepository(
 
     suspend fun rename(id: String, title: String) {
         checkedName(title, "文稿名称")
-        val current = dao.rawDocument(id) ?: return
+        val current = dao.document(id) ?: return
         dao.updateTitle(id, title.trim().ifBlank { current.title }, System.currentTimeMillis())
     }
 
-    suspend fun updateContent(id: String, title: String, text: String) {
+    suspend fun updateContent(id: String, title: String, text: String) = updateContent(id, title, text, null)
+
+    suspend fun updateContent(id: String, title: String, text: String, legacyTitle: String?) {
         checkedName(title, "文稿名称")
         require(text.length <= 1_000_000) { "文稿超过 100 万字，请拆分后保存" }
         val segmented = TextSegmenter.segment(text)
@@ -151,7 +154,9 @@ class DocumentRepository(
         require(segmented.sentences.isNotEmpty()) { "没有找到可朗读的文字" }
         database.withTransaction {
             val current = dao.document(id) ?: error("没有找到这篇文稿")
-            val nextTitle = title.trim().ifBlank { current.title }
+            val retainedTitle = validatedLegacyTitle(id, title, legacyTitle, current)
+                ?: current.title.takeIf { it.length > MAX_NAME_CHARACTERS && title == namePreview(it) }
+            val nextTitle = retainedTitle ?: title.trim().ifBlank { current.title }
             if (current.text == segmented.normalizedText) {
                 if (nextTitle != current.title) dao.updateTitle(id, nextTitle, System.currentTimeMillis())
                 return@withTransaction
@@ -205,10 +210,25 @@ class DocumentRepository(
     }
 
     suspend fun draft(id: String) = dao.draft(id)
-    suspend fun saveDraft(draft: com.museum.reader.data.db.EditorDraftEntity) {
+    suspend fun saveDraft(draft: com.museum.reader.data.db.EditorDraftEntity) = saveDraft(draft, null)
+
+    suspend fun saveDraft(draft: com.museum.reader.data.db.EditorDraftEntity, legacyTitle: String?) = database.withTransaction {
         checkedName(draft.title, "草稿名称")
         require(draft.text.length <= 1_000_000) { "草稿超过 100 万字" }
-        dao.putDraft(draft)
+        val current = dao.anyDocument(draft.documentId) ?: error("没有找到这篇文稿")
+        val retained = validatedLegacyTitle(draft.documentId, draft.title, legacyTitle, current)
+            ?: dao.draft(draft.documentId)?.title?.takeIf { it.length > MAX_NAME_CHARACTERS && draft.title == namePreview(it) }
+            ?: current.title.takeIf { it.length > MAX_NAME_CHARACTERS && draft.title == namePreview(it) }
+        dao.putDraft(draft.copy(title = retained ?: draft.title))
+    }
+
+    private suspend fun validatedLegacyTitle(id: String, preview: String, original: String?, current: DocumentEntity): String? {
+        if (original == null) return null
+        require(original.length > MAX_NAME_CHARACTERS && preview == namePreview(original)) { "旧名称已变化，请重新打开文稿" }
+        require(original == current.title || original == dao.draft(id)?.title || dao.versions(id).any { it.title == original }) {
+            "旧名称已变化，请重新打开文稿"
+        }
+        return original
     }
     suspend fun deleteDraft(id: String) = dao.deleteDraft(id)
 
@@ -227,13 +247,19 @@ class DocumentRepository(
     }
 
     suspend fun versions(id: String): List<DocumentVersion> = dao.versions(id).map {
-        DocumentVersion(it.id, it.title, it.text, it.createdAt)
+        DocumentVersion(it.id, namePreview(it.title), it.text, it.createdAt, it.title.length > MAX_NAME_CHARACTERS)
+    }
+
+    suspend fun renameVersion(documentId: String, versionId: String, title: String) {
+        checkedName(title, "历史版本名称")
+        require(title.isNotBlank()) { "历史版本名称不能为空" }
+        check(dao.updateVersionTitle(documentId, versionId, title.trim()) == 1) { "没有找到这个历史版本，请重新打开" }
     }
 
     suspend fun restoreVersion(documentId: String, versionId: String) {
         val version = dao.versions(documentId).firstOrNull { it.id == versionId } ?: return
         database.withTransaction {
-            updateContent(documentId, version.title, version.text)
+            updateContent(documentId, namePreview(version.title), version.text, version.title.takeIf { it.length > MAX_NAME_CHARACTERS })
             version.sentenceSnapshot?.let { payload ->
                 val snapshot = JSONArray(payload)
                 val active = dao.sentences(documentId)
@@ -271,7 +297,7 @@ class DocumentRepository(
     suspend fun playlists(): List<ReaderPlaylist> {
         val oversized = dao.oversizedPlaylistIds().toSet()
         return dao.playlists().map { playlist ->
-            ReaderPlaylist(playlist.id, playlist.title.take(MAX_NAME_CHARACTERS), dao.playlistItems(playlist.id).map { it.documentId },
+            ReaderPlaylist(playlist.id, namePreview(playlist.title), dao.playlistItems(playlist.id).map { it.documentId },
                 playlist.lastDocumentId, playlist.id in oversized || playlist.title.length > MAX_NAME_CHARACTERS)
         }
     }
@@ -285,7 +311,7 @@ class DocumentRepository(
             val createdAt = previous?.createdAt ?: now
             val lastDocumentId = previous?.lastDocumentId?.takeIf { it in documentIds }
             if (previous != null && (previous.id in dao.oversizedPlaylistIds() || previous.title.length > MAX_NAME_CHARACTERS) &&
-                title == previous.title.take(MAX_NAME_CHARACTERS)) {
+                title == namePreview(previous.title)) {
                 // Reordering an old oversized route must not silently replace its full stored name.
                 dao.updatePlaylistKeepingTitle(playlistId, now, lastDocumentId)
             } else {
@@ -384,8 +410,9 @@ class DocumentRepository(
         operationId: String,
         expectedFingerprint: String? = null,
         restoreSettings: Boolean = true,
+        acceptRouteWarnings: Boolean = false,
     ): BackupImportResult = BackupStore(database).restore(
-        graph, policy, audio, operationId, expectedFingerprint, restoreSettings,
+        graph, policy, audio, operationId, expectedFingerprint, restoreSettings, acceptRouteWarnings,
     ).also { contentHashes.clear() }
 
     suspend fun importBackup(
@@ -456,13 +483,15 @@ class DocumentRepository(
     }
 
     private fun ReaderDocument.toEntity() = DocumentEntity(
-        id, title, source.name, text, createdAt, updatedAt, lastSentence, isPinned,
+        id, legacyTitle ?: title, source.name, text, createdAt, updatedAt, lastSentence, isPinned,
         speechRate, sentencePauseMs, paragraphPauseMs, null,
     )
 
-    private fun DocumentEntity.toModel() = ReaderDocument(
-        id, title, runCatching { DocumentSource.valueOf(source) }.getOrDefault(DocumentSource.TXT),
+    private fun DocumentEntity.toModel(retainLegacyTitle: Boolean = true) = ReaderDocument(
+        id, namePreview(title), runCatching { DocumentSource.valueOf(source) }.getOrDefault(DocumentSource.TXT),
         text, createdAt, updatedAt, lastSentence, isPinned, speechRate, sentencePauseMs, paragraphPauseMs,
+        needsNameReview = title.length > MAX_NAME_CHARACTERS,
+        legacyTitle = title.takeIf { retainLegacyTitle && it.length > MAX_NAME_CHARACTERS },
     )
 
     private fun AudioAssetEntity.toModel() = SentenceAudio(

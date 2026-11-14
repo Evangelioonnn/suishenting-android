@@ -40,6 +40,8 @@ data class ReaderDocument(
     val speechRate: Float? = null,
     val sentencePauseMs: Int? = null,
     val paragraphPauseMs: Int? = null,
+    val needsNameReview: Boolean = false,
+    val legacyTitle: String? = null,
 )
 
 data class ReaderBookmark(

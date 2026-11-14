@@ -204,7 +204,8 @@ class BackupManager(
             require(entries.keys.all { it in usedEntries }) { "备份有未在清单登记的音频" }
             AudioFiles.writeAtomic(File(directory, "manifest.json"), graph.root.toString())
             AudioFiles.writeAtomic(File(directory, "journal.json"), JSONObject().put("id", directory.name).put("phase", "prepared").toString())
-            val preview = repository.previewBackup(graph, audio).copy(audioCount = audio.size, warnings = warnings)
+            val databasePreview = repository.previewBackup(graph, audio)
+            val preview = databasePreview.copy(audioCount = audio.size, warnings = (warnings + databasePreview.warnings).distinct())
             return PreparedBackup(preview, graph, directory, audio)
         } catch (error: Throwable) {
             removeStaging(directory)
@@ -218,7 +219,7 @@ class BackupManager(
         restoreSettings: Boolean = false,
         acceptWarnings: Boolean = false,
     ): BackupImportResult {
-        require(prepared.preview.warnings.isEmpty() || acceptWarnings) { "请先确认缺失或损坏音频的恢复提示" }
+        require(prepared.preview.warnings.isEmpty() || acceptWarnings) { "请先确认不能完整恢复的内容提示" }
         val directory = requireStaging(prepared.directory)
         val operationId = directory.name
         if (repository.hasRestoreReceipt(operationId)) {
@@ -253,14 +254,14 @@ class BackupManager(
             checkpoint?.invoke("files_staged")
             checkpoint?.invoke("before_commit")
             val result = repository.restoreBackup(prepared.graph, policy, copied, operationId,
-                prepared.preview.localFingerprint, restoreSettings)
+                prepared.preview.localFingerprint, restoreSettings, acceptRouteWarnings = acceptWarnings)
             checkpoint?.invoke("after_commit")
             if (restoreSettings) applySettings(prepared.graph)
             journal.put("phase", "settings_applied")
             AudioFiles.writeAtomic(File(directory, "journal.json"), journal.toString())
             cleanupUnreferenced(destination)
             removeStaging(directory)
-            return result.copy(warnings = prepared.preview.warnings, recoveryPoint = recoveryPoint)
+            return result.copy(warnings = (prepared.preview.warnings + result.warnings).distinct(), recoveryPoint = recoveryPoint)
         } catch (error: Throwable) {
             if (!repository.hasRestoreReceipt(operationId)) {
                 cleanupUnreferenced(destination)

@@ -5,6 +5,13 @@ import org.json.JSONException
 
 internal const val MAX_NAME_CHARACTERS = 1_000
 
+internal fun namePreview(value: String): String {
+    if (value.length <= MAX_NAME_CHARACTERS) return value
+    var end = MAX_NAME_CHARACTERS
+    if (Character.isHighSurrogate(value[end - 1]) && Character.isLowSurrogate(value[end])) end--
+    return value.substring(0, end)
+}
+
 internal fun checkedName(value: String, label: String): String = value.also {
     require(it.length <= MAX_NAME_CHARACTERS) { "${label}不能超过 1000 字，请缩短名称后重试" }
 }

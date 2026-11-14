@@ -57,7 +57,7 @@ internal fun BackupRestoreDialog(
                 }
                 BackupCheckbox("恢复备份中的朗读设置", restoreSettings) { restoreSettings = it }
                 if (preview.warnings.isNotEmpty()) {
-                    Text("有音频不能恢复", color = MaterialTheme.colorScheme.error,
+                    Text("有内容不能完整恢复", color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.titleMedium)
                     preview.warnings.forEach { Text(it, style = MaterialTheme.typography.bodyMedium) }
                     BackupCheckbox("已了解，将只恢复校验通过的内容", acknowledgeWarnings) { acknowledgeWarnings = it }
@@ -89,7 +89,7 @@ internal fun BackupResultDialog(warnings: List<String>, hasRecoveryPoint: Boolea
             Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (hasRecoveryPoint) Text("覆盖前的资料已保存为本机恢复点，可在设置的存储维护中查看和恢复。")
-                if (warnings.isNotEmpty()) Text("下列音频没有恢复，相关文稿仍已保留：")
+                if (warnings.isNotEmpty()) Text("恢复时有以下内容需要注意，请逐项核对：")
                 warnings.forEach { Text(it) }
             }
         },

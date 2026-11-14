@@ -72,7 +72,7 @@ class StorageMaintenance(
             val sentence = sentences[asset.sentenceId]
             val old = asset.archivedAt != null || sentence?.retiredAt != null ||
                 sentence?.textHash != asset.textHash || file?.isFile != true
-            StoredAudioInfo(asset, documents[asset.documentId]?.title ?: "不可用文稿", sentence?.text.orEmpty(),
+            StoredAudioInfo(asset, documents[asset.documentId]?.title?.let(::namePreview) ?: "不可用文稿", sentence?.text.orEmpty(),
                 file?.takeIf { it.isFile }?.length() ?: 0L, old,
                 asset.documentId in invalidHistoryDocuments || documents[asset.documentId]?.trashedAt != null || (old && asset.sentenceId in historyIds) ||
                     file?.path in pending || file?.path in inUse, file?.isFile != true)
@@ -91,7 +91,7 @@ class StorageMaintenance(
         }
         val trash = documents.values.filter { it.trashedAt != null }.map { doc ->
             val assets = items.filter { it.audio.documentId == doc.id }
-            TrashedDocumentInfo(doc.id, doc.title, doc.trashedAt!!,
+            TrashedDocumentInfo(doc.id, namePreview(doc.title), doc.trashedAt!!,
                 assets.count { it.audio.kind == AudioKind.RECORDING }, assets.count { it.audio.kind == AudioKind.CLOUD },
                 assets.distinctBy { ownedPath(it.audio.path) }.sumOf { it.bytes })
         }.sortedByDescending { it.trashedAt }
@@ -102,7 +102,7 @@ class StorageMaintenance(
         return StorageOverview(recordingBytes, cloudBytes, oldBytes, unlinked.sumOf { it.bytes },
             items, unlinked, trash, points, invalidHistoryDocuments.map {
                 "《${documents[it]?.title.orEmpty().take(60)}》有历史关联不完整，相关旧音频已保护，请保留原备份后再处理。"
-            })
+            } + if (dao.hasOversizedNames()) listOf("有旧名称过长，完整原值仍保留。请在文稿、草稿或版本历史中修正名称后再导出备份。") else emptyList())
     }
 
     suspend fun restoreAudio(id: String) {

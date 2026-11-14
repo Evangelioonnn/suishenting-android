@@ -106,6 +106,7 @@ internal class BackupStore(private val database: ReaderDatabase) {
         require(array.length() <= 10_000) { "备份文稿数量超限" }
         val documentIds = HashSet<String>()
         val sentenceIds = HashSet<String>()
+        val versionIds = HashSet<String>()
         val documents = (0 until array.length()).map { index ->
             val item = array.getJSONObject(index)
             val id = item.requiredId("id")
@@ -160,6 +161,8 @@ internal class BackupStore(private val database: ReaderDatabase) {
             require(versionArray.length() <= 100) { "版本历史数量异常" }
             val versions = (0 until versionArray.length()).map { j ->
                 val entry = versionArray.getJSONObject(j)
+                val versionId = entry.requiredId("id")
+                require(versionIds.add(versionId)) { "备份有重复的历史版本编号，请检查备份后重试" }
                 val body = entry.getString("text")
                 require(body.length <= 1_000_000) { "历史文稿超过上限" }
                 val snapshot = entry.nullableString("sentenceSnapshot")?.also { payload ->
@@ -168,7 +171,7 @@ internal class BackupStore(private val database: ReaderDatabase) {
                     require(references.all { reference -> byId[reference.id]?.text == reference.text } &&
                         (references.isNotEmpty() || body.isBlank())) { "备份历史句子引用或文字不一致" }
                 }
-                DocumentVersionEntity(entry.requiredId("id"), id,
+                DocumentVersionEntity(versionId, id,
                     checkedName(entry.optString("title", document.title), "备份历史文稿名称"), body,
                     entry.optLong("createdAt", 0L), snapshot)
             }
@@ -204,6 +207,7 @@ internal class BackupStore(private val database: ReaderDatabase) {
             local[entry.document.id]?.let { !sameContent(it, entry.document) || entry.document.id in audioConflicts } == true
         }.map { it.document.title }
         BackupPreview(added, same, conflicts, fingerprint(local.values, localAudio),
+            warnings = routeWarnings(graph, local.keys),
             audioConflictTitles = graph.documents.filter { it.document.id in audioConflicts }.map { it.document.title })
     }
 
@@ -214,9 +218,12 @@ internal class BackupStore(private val database: ReaderDatabase) {
         operationId: String,
         expectedFingerprint: String? = null,
         restoreSettings: Boolean = true,
+        acceptRouteWarnings: Boolean = false,
     ): BackupImportResult = database.withTransaction {
         if (dao.hasRestoreReceipt(operationId)) return@withTransaction BackupImportResult(0, null)
         val local = dao.documentsIncludingTrash().associateBy { it.id }.toMutableMap()
+        val routeWarnings = routeWarnings(graph, local.keys)
+        require(routeWarnings.isEmpty() || acceptRouteWarnings) { "路线包含找不到的文稿，请先预览并确认缺失站点" }
         val localAudio = dao.allAudioAssets()
         val audioConflicts = audioConflicts(graph, audio, localAudio)
         require(expectedFingerprint == null || expectedFingerprint == fingerprint(local.values, localAudio)) {
@@ -368,7 +375,22 @@ internal class BackupStore(private val database: ReaderDatabase) {
             dao.putPlaylistItems(mappedIds.mapIndexed { index, documentId -> PlaylistItemEntity(targetId, documentId, index) })
         }
         dao.putRestoreReceipt(RestoreReceiptEntity(operationId, System.currentTimeMillis()))
-        BackupImportResult(imported, graph.settings.takeIf { restoreSettings }, audioCount)
+        BackupImportResult(imported, graph.settings.takeIf { restoreSettings }, audioCount, warnings = routeWarnings)
+    }
+
+    private fun routeWarnings(graph: BackupGraph, localIds: Set<String>): List<String> {
+        val available = localIds + graph.documents.map { it.document.id }
+        val routes = graph.root.optJSONArray("playlists") ?: return emptyList()
+        return buildList {
+            for (i in 0 until routes.length()) {
+                val route = routes.getJSONObject(i)
+                val ids = route.optJSONArray("documentIds") ?: continue
+                for (station in 0 until ids.length()) {
+                    val id = ids.getString(station)
+                    if (id !in available) add("路线《${route.optString("title", "讲解路线")}》第${station + 1}站的文稿（$id）不存在；恢复该路线时将跳过此站。")
+                }
+            }
+        }
     }
 
     private fun sameContent(a: DocumentEntity, b: DocumentEntity) =

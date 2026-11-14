@@ -515,6 +515,7 @@ internal fun HomeScreen(
     renameDocument?.let { document ->
         RenameDialog(
             initialTitle = document.title,
+            needsNameReview = document.needsNameReview,
             onDismiss = { renameDocument = null },
             onConfirm = {
                 onRename(document.id, it)
@@ -698,6 +699,7 @@ private fun DocumentCard(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
+                if (document.needsNameReview) Text("旧名称过长，可重命名修正", style = MaterialTheme.typography.bodySmall)
                 Text(
                     "${sourceLabel(document.source)} · ${formatDate(document.updatedAt)} · 上次第 ${document.lastSentence + 1} 句",
                     style = MaterialTheme.typography.bodyMedium,
@@ -778,13 +780,14 @@ private fun ImportPreviewDialog(
 }
 
 @Composable
-private fun RenameDialog(initialTitle: String, onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
+private fun RenameDialog(initialTitle: String, needsNameReview: Boolean = false, onDismiss: () -> Unit, onConfirm: (String) -> Unit) {
     var title by remember(initialTitle) { mutableStateOf(initialTitle) }
     InputDialog(title = "重命名", onDismiss = onDismiss, actions = {
         TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) { Text("取消") }
-        TextButton(onClick = { onConfirm(title) }, enabled = title.isNotBlank(),
+        TextButton(onClick = { onConfirm(title) }, enabled = title.isNotBlank() && title.length <= 1000,
             modifier = Modifier.heightIn(min = 48.dp)) { Text("保存") }
     }) {
+            if (needsNameReview) Text("原名称过长，当前仅显示前部。确认保存将修正文稿名称，正文与录音保留。")
             OutlinedTextField(
                 value = title,
                 onValueChange = { title = it },

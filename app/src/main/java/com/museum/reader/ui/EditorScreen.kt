@@ -9,6 +9,8 @@ import android.view.MotionEvent
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
+import com.museum.reader.data.DocumentVersion
+import com.museum.reader.data.MAX_NAME_CHARACTERS
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -99,6 +101,8 @@ internal fun EditorScreen(controller: EditorController, onBack: () -> Unit, snac
     var titleDialog by rememberSaveable { mutableStateOf(false) }
     var moreOpen by remember { mutableStateOf(false) }
     var historyOpen by remember { mutableStateOf(false) }
+    var versionNameTarget by remember { mutableStateOf<DocumentVersion?>(null) }
+    var versionName by remember { mutableStateOf("") }
     var discardOpen by remember { mutableStateOf(false) }
     var errorDetailsOpen by remember { mutableStateOf(false) }
     var fullScreen by rememberSaveable { mutableStateOf(false) }
@@ -109,8 +113,8 @@ internal fun EditorScreen(controller: EditorController, onBack: () -> Unit, snac
     val shortWindow = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.height.toDp() } < 440.dp
     val compact = fullScreen || shortWindow || bodyFocused && imeShown
     val lifecycle = LocalLifecycleOwner.current
-    LaunchedEffect(editor.error, editor.pendingDraft) {
-        errorDetailsOpen = editor.error != null && editor.pendingDraft == null
+    LaunchedEffect(editor.error, editor.pendingDraft, versionNameTarget) {
+        errorDetailsOpen = editor.error != null && editor.pendingDraft == null && versionNameTarget == null
     }
     DisposableEffect(lifecycle) {
         val observer = LifecycleEventObserver { _, event ->
@@ -273,6 +277,7 @@ internal fun EditorScreen(controller: EditorController, onBack: () -> Unit, snac
         TextButton(onClick = { titleDialog = false; keyboard?.hide() },
             modifier = Modifier.heightIn(min = 48.dp)) { Text("完成") }
     }) {
+            if (editor.retainedTitle != null) Text("原名称过长，当前仅显示前部；未改名称时保留完整原值。输入新名称后，仍需保存正式文稿。")
             OutlinedTextField(value = editor.title, onValueChange = { controller.change(it, editor.text) },
                 label = { Text("文稿名称") }, modifier = Modifier.fillMaxWidth())
             Text("${editor.text.length} 字 · ${editor.draftStatus}")
@@ -292,7 +297,7 @@ internal fun EditorScreen(controller: EditorController, onBack: () -> Unit, snac
             if (editor.choosingDraft) Text("正在放弃未提交草稿…")
         }
     }
-    if (errorDetailsOpen && editor.error != null && editor.pendingDraft == null) InputDialog(
+    if (errorDetailsOpen && editor.error != null && editor.pendingDraft == null && versionNameTarget == null) InputDialog(
         title = "编辑操作未完成", onDismiss = { errorDetailsOpen = false }, actions = {
             TextButton(onClick = { errorDetailsOpen = false }, modifier = Modifier.heightIn(min = 48.dp)) { Text("返回编辑") }
         }) { Text(checkNotNull(editor.error), color = MaterialTheme.colorScheme.error) }
@@ -308,9 +313,34 @@ internal fun EditorScreen(controller: EditorController, onBack: () -> Unit, snac
         text = { Column(Modifier.verticalScroll(rememberScrollState())) {
             Text("正文变化才保留旧版，最多 5 版。恢复前先保存当前修改。")
             editor.versions.forEach { version ->
+                if (version.needsNameReview) {
+                    Text("旧版本名称过长，完整原值仍保留。")
+                    TextButton(onClick = {
+                        controller.clearVersionNameError()
+                        historyOpen = false; versionNameTarget = version; versionName = version.title
+                    }) { Text("修正历史版本名称") }
+                }
                 TextButton(onClick = { historyOpen = false; controller.restoreVersion(version.id) }) {
                     Text("${version.title} · ${java.text.SimpleDateFormat("M月d日 HH:mm", java.util.Locale.CHINA).format(java.util.Date(version.createdAt))} · 恢复")
                 }
             }
         } }, confirmButton = { TextButton(onClick = { historyOpen = false }) { Text("返回") } })
+    versionNameTarget?.let { version ->
+        InputDialog(title = "修正历史版本名称", onDismiss = {
+            if (!editor.saving) { versionNameTarget = null; historyOpen = true; controller.clearVersionNameError() }
+        }, actions = {
+            TextButton(onClick = { versionNameTarget = null; historyOpen = true },
+                enabled = !editor.saving, modifier = Modifier.heightIn(min = 48.dp)) { Text("取消") }
+            TextButton(onClick = {
+                controller.renameVersion(version.id, versionName) { versionNameTarget = null; historyOpen = true }
+            }, enabled = !editor.saving && versionName.isNotBlank() && versionName.length <= MAX_NAME_CHARACTERS,
+                modifier = Modifier.heightIn(min = 48.dp)) { Text("保存名称") }
+        }) {
+            editor.versionNameError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            if (editor.renamingVersion) Text("正在修正历史版本名称…")
+            Text("原名称过长，仅显示前部。确认后只修改这个历史版本的名称，正文、时间和句子关联保持。")
+            OutlinedTextField(value = versionName, onValueChange = { versionName = it }, singleLine = true,
+                label = { Text("历史版本名称") }, modifier = Modifier.fillMaxWidth())
+        }
+    }
 }
