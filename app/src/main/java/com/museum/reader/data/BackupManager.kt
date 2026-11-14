@@ -26,7 +26,10 @@ class PreparedBackup internal constructor(
     internal val graph: BackupGraph,
     internal val directory: File,
     internal val audio: List<SentenceAudio>,
+    internal val settingsSnapshot: BackupSettingsSnapshot,
 )
+
+data class BackupExportResult(val warnings: List<String>)
 
 /** Stages untrusted packages and commits graph references only after immutable audio files exist. */
 class BackupManager(
@@ -36,36 +39,40 @@ class BackupManager(
 ) {
     private val stagingRoot get() = File(context.filesDir, "restore-staging")
     private val contentResolver get() = context.contentResolver
+    private val settingsGuard = BackupSettingsGuard(context)
 
-    suspend fun export(uri: Uri, settings: ReaderSettings) {
+    suspend fun export(uri: Uri, settings: ReaderSettings): BackupExportResult {
         val temporary = File(context.cacheDir, "backup-export-" + UUID.randomUUID() + ".zip")
         try {
-            writePackage(temporary, settings)
+            val result = writePackage(temporary, settings)
             val output = contentResolver.openOutputStream(uri, "w") ?: error("无法写入所选位置")
             output.buffered().use { target -> temporary.inputStream().buffered().use { it.copyTo(target) } }
+            return result
         } finally {
             temporary.delete()
         }
     }
 
-    private suspend fun writePackage(target: File, settings: ReaderSettings) {
+    private suspend fun writePackage(target: File, settings: ReaderSettings): BackupExportResult {
         require(File(context.filesDir, "recording-pending").listFiles().orEmpty().none { it.extension == "json" }) {
             "有待确认录音，请先在录音或存储维护中保存、放弃后再备份，避免漏掉本次录音"
         }
         val snapshot = repository.exportPackageData(settings)
         val root = snapshot.manifest.put("packageVersion", 3)
         val cloud = CloudSpeechPreferencesRepository(context).load()
-        root.put("cloudPreferences", JSONObject().put("enabled", cloud.enabled)
-            .put("primaryProvider", cloud.primaryProvider.name).put("xunfeiVoice", cloud.xunfeiVoice)
-            .put("baiduVoice", cloud.baiduVoice).put("dailyCharacterLimit", cloud.dailyCharacterLimit))
+        root.put("cloudPreferences", cloud.toBackupJson())
         val descriptors = JSONArray()
         val sources = LinkedHashMap<String, File>()
+        val warnings = ArrayList<String>()
         var total = 0L
         for (asset in snapshot.audio) {
             val file = AudioFiles.requireOwned(context, File(asset.path))
             require(file.isFile) { "有音频文件已缺失，请先在存储管理中检查后再备份" }
             val size = file.length()
             require(size in 1..MAX_AUDIO_BYTES) { "有音频超过 100 MB，无法安全备份" }
+            if (AudioFiles.inspect(file) == null) {
+                warnings += "音频 ${asset.id}：无法解码，备份保留原始文件，但恢复时不能作为可播放音频使用"
+            }
             total += size
             require(total <= MAX_TOTAL_BYTES) { "备份音频超过 2 GB，请先整理缓存" }
             val extension = file.extension.lowercase().takeIf { it in EXTENSIONS } ?: "audio"
@@ -106,6 +113,7 @@ class BackupManager(
                 output.fd.sync()
             }
         }
+        return BackupExportResult(warnings)
     }
 
     suspend fun prepare(uri: Uri): PreparedBackup {
@@ -206,7 +214,7 @@ class BackupManager(
             AudioFiles.writeAtomic(File(directory, "journal.json"), JSONObject().put("id", directory.name).put("phase", "prepared").toString())
             val databasePreview = repository.previewBackup(graph, audio)
             val preview = databasePreview.copy(audioCount = audio.size, warnings = (warnings + databasePreview.warnings).distinct())
-            return PreparedBackup(preview, graph, directory, audio)
+            return PreparedBackup(preview, graph, directory, audio, settingsGuard.snapshot())
         } catch (error: Throwable) {
             removeStaging(directory)
             throw error
@@ -227,10 +235,11 @@ class BackupManager(
             return BackupImportResult(0, null, warnings = listOf("这次恢复已经提交，没有重复导入"))
         }
         require(repository.previewBackup(prepared.graph, prepared.audio).localFingerprint == prepared.preview.localFingerprint) {
-            "本机文稿已变化，请重新选择备份并预览"
+            "本机资料已变化，请重新选择备份并预览"
         }
+        if (restoreSettings) settingsGuard.requireUnchanged(prepared.settingsSnapshot)
         var recoveryPoint: String? = null
-        if (policy == BackupConflictPolicy.REPLACE && prepared.preview.conflictTitles.isNotEmpty()) {
+        if (policy == BackupConflictPolicy.REPLACE && prepared.preview.hasConflicts) {
             val point = File(context.filesDir, "recovery-points/" + UUID.randomUUID() + ".museumreader")
             writePackage(point, SettingsRepository(context).load())
             recoveryPoint = point.path
@@ -239,6 +248,7 @@ class BackupManager(
         require(!destination.exists()) { "恢复暂存已存在，请重新预览" }
         val journal = JSONObject().put("id", operationId).put("phase", "staging")
             .put("destination", destination.path).put("restoreSettings", restoreSettings)
+            .put("settingsBefore", prepared.settingsSnapshot.toJson())
         AudioFiles.writeAtomic(File(directory, "journal.json"), journal.toString())
         try {
             check(destination.mkdirs()) { "无法创建音频恢复目录" }
@@ -254,14 +264,17 @@ class BackupManager(
             checkpoint?.invoke("files_staged")
             checkpoint?.invoke("before_commit")
             val result = repository.restoreBackup(prepared.graph, policy, copied, operationId,
-                prepared.preview.localFingerprint, restoreSettings, acceptRouteWarnings = acceptWarnings)
+                prepared.preview.localFingerprint, restoreSettings, acceptRouteWarnings = acceptWarnings,
+                validateSettings = if (restoreSettings) ({ settingsGuard.requireUnchanged(prepared.settingsSnapshot) }) else null)
             checkpoint?.invoke("after_commit")
-            if (restoreSettings) applySettings(prepared.graph)
+            val settingsApplied = !restoreSettings || applySettings(prepared.graph, prepared.settingsSnapshot)
             journal.put("phase", "settings_applied")
             AudioFiles.writeAtomic(File(directory, "journal.json"), journal.toString())
             cleanupUnreferenced(destination)
             removeStaging(directory)
-            return result.copy(warnings = (prepared.preview.warnings + result.warnings).distinct(), recoveryPoint = recoveryPoint)
+            val settingsWarning = if (settingsApplied) emptyList() else listOf("文稿已恢复；本机设置在恢复期间变化，已保留更新的本机设置。")
+            return result.copy(settings = result.settings.takeIf { settingsApplied },
+                warnings = (prepared.preview.warnings + result.warnings + settingsWarning).distinct(), recoveryPoint = recoveryPoint)
         } catch (error: Throwable) {
             if (!repository.hasRestoreReceipt(operationId)) {
                 cleanupUnreferenced(destination)
@@ -273,8 +286,8 @@ class BackupManager(
 
     suspend fun import(uri: Uri): BackupImportResult {
         val prepared = prepare(uri)
-        require(prepared.preview.conflictTitles.isEmpty() && prepared.preview.warnings.isEmpty()) {
-            "此备份有冲突或缺失音频，需要先预览确认"
+        require(!prepared.preview.hasConflicts && prepared.preview.warnings.isEmpty()) {
+            "此备份有冲突或不能完整恢复的内容，需要先预览确认"
         }
         return restore(prepared, restoreSettings = true)
     }
@@ -294,13 +307,19 @@ class BackupManager(
                 val journal = JSONObject(AtomicFile(journalFile).readFully().toString(Charsets.UTF_8))
                 require(journal.getString("id") == directory.name) { "恢复记录编号不一致" }
                 val committed = repository.hasRestoreReceipt(directory.name)
+                var keptNewSettings = false
                 if (committed && journal.optBoolean("restoreSettings") && journal.optString("phase") != "settings_applied") {
                     val graph = repository.parseBackup(File(directory, "manifest.json").readText())
-                    applySettings(graph)
+                    val expected = journal.optJSONObject("settingsBefore")?.let(BackupSettingsSnapshot::parse)
+                    keptNewSettings = !applySettings(graph, expected)
                 }
                 journal.nullableString("destination")?.let { cleanupUnreferenced(File(it)) }
                 removeStaging(directory)
-                messages += if (committed) "已完成上次中断的恢复整理" else "上次恢复未提交，本机原数据已保留"
+                messages += when {
+                    keptNewSettings -> "已完成上次中断的恢复整理；保留了更新的本机设置"
+                    committed -> "已完成上次中断的恢复整理"
+                    else -> "上次恢复未提交，本机原数据已保留"
+                }
             } catch (_: Exception) {
                 messages += "有恢复整理尚未完成，暂存数据已保留，请检查存储空间"
             }
@@ -320,12 +339,9 @@ class BackupManager(
         if (target.isDirectory && target.listFiles().isNullOrEmpty()) target.delete()
     }
 
-    private fun applySettings(graph: BackupGraph) {
-        graph.settings?.let { SettingsRepository(context).save(it, synchronous = true) }
-        graph.root.optJSONObject("cloudPreferences")?.let {
-            CloudSpeechPreferencesRepository(context).save(parseCloudPreferences(it), synchronous = true)
-        }
-    }
+    private fun applySettings(graph: BackupGraph, expected: BackupSettingsSnapshot?): Boolean =
+        settingsGuard.applyIfUnchanged(expected, graph.settings,
+            graph.root.optJSONObject("cloudPreferences")?.let(::parseCloudPreferences))
 
     private fun parseCloudPreferences(item: JSONObject): CloudSpeechPreferences {
         val limit = item.optInt("dailyCharacterLimit", 20_000)

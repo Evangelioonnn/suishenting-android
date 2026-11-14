@@ -216,7 +216,7 @@ class TtsPlaybackService : Service() {
     private fun useSystemVoice(token: Long, text: String) {
         if (!accepts(token)) return
         ttsToken = token
-        chunks = text.chunked((TextToSpeech.getMaxSpeechInputLength() - 100).coerceAtLeast(500))
+        chunks = SpeechTextChunks.split(text, (TextToSpeech.getMaxSpeechInputLength() - 100).coerceAtLeast(500)).toList()
         chunkIndex = 0
         if (ttsReady) return startSystemVoice(token)
         if (ttsInitializing) return

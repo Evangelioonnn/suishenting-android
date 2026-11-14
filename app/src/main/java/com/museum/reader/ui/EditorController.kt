@@ -30,8 +30,10 @@ data class EditorUiState(
     val retainedTitle: String? = null,
     val renamingVersion: Boolean = false,
     val versionNameError: String? = null,
+    val discarding: Boolean = false,
 ) {
     val draftStatus: String get() = when {
+        discarding -> "正在放弃修改…"
         choosingDraft -> "正在放弃未提交草稿…"
         renamingVersion -> "正在修正历史版本名称…"
         saving -> "正在保存正式文稿…"
@@ -219,16 +221,21 @@ class EditorController(
         if (mutableState.value.saving) return
         val id = mutableState.value.document?.id ?: return
         val request = opening
+        mutableState.value = mutableState.value.copy(saving = true, discarding = true, error = null)
         scope.launch {
             try {
+                var discarded = false
                 writes.withLock {
+                    if (!owns(id, request)) return@withLock
                     withContext(Dispatchers.IO) { repository.deleteDraft(id) }
                     if (!owns(id, request)) return@withLock
                     mutableState.value = EditorUiState(installRevision = ++install)
+                    discarded = true
                 }
-                if (opening == request && mutableState.value.document == null) after()
+                if (discarded && opening == request && mutableState.value.document == null) after()
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { if (owns(id, request)) mutableState.value = mutableState.value.copy(error = "无法放弃草稿，请检查存储空间后重试") }
+            catch (_: Exception) { if (owns(id, request)) mutableState.value = mutableState.value.copy(saving = false,
+                discarding = false, error = "无法放弃草稿，请检查存储空间后重试") }
         }
     }
 
@@ -250,7 +257,20 @@ class EditorController(
                 }
                 if (!owns(id, request)) return@launch
                 onSaved(loaded)
-                if (owns(id, request)) open(id) {}
+                val versions = withContext(Dispatchers.IO) { repository.versions(id) }
+                if (!owns(id, request)) return@launch
+                val latest = mutableState.value
+                if (latest.revision == s.revision) {
+                    mutableState.value = EditorUiState(document = loaded.document, title = loaded.document.title,
+                        text = loaded.document.text, savedInputTitle = loaded.document.title, savedInputText = loaded.document.text,
+                        versions = versions, retainedTitle = loaded.document.legacyTitle, installRevision = ++install)
+                } else {
+                    // Input accepted while restore was in flight belongs to the user, not to the old version.
+                    mutableState.value = latest.copy(document = loaded.document, versions = versions, saving = false,
+                        savedInputTitle = loaded.document.title, savedInputText = loaded.document.text,
+                        dirty = latest.title != loaded.document.title || latest.text != loaded.document.text, error = null)
+                    persistCurrent()
+                }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) {
                 if (owns(id, request)) mutableState.value = mutableState.value.copy(saving = false,

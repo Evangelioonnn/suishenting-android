@@ -9,6 +9,7 @@ import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
+import com.museum.reader.domain.SpeechTextChunks
 
 class BaiduSpeechProvider(
     private val credentials: BaiduCredentials,
@@ -24,9 +25,11 @@ class BaiduSpeechProvider(
         val token = accessToken?.takeIf { android.os.SystemClock.elapsedRealtime() < tokenExpiresAt }
             ?: requestToken().also { accessToken = it }
         val output = ByteArrayOutputStream()
-        splitForBaidu(text).forEach { chunk ->
+        SpeechTextChunks.split(text, 300, 900).forEach { chunk ->
             currentCoroutineContext().ensureActive()
-            output.write(synthesizeChunk(chunk, voiceId, token))
+            val bytes = synthesizeChunk(chunk, voiceId, token)
+            require(output.size().toLong() + bytes.size <= MAX_AUDIO_BYTES) { AUDIO_LIMIT_GUIDANCE }
+            output.write(bytes)
         }
         val bytes = output.toByteArray()
         require(bytes.size > 256) { "百度返回的音频内容为空" }
@@ -48,8 +51,8 @@ class BaiduSpeechProvider(
             .build()
         val request = Request.Builder().url(TTS_URL).post(body).build()
         return client.newCall(request).readCancellable { response ->
-            val bytes = response.body.bytes()
             if (!response.isSuccessful) throw CloudServiceException.http(provider, response.code)
+            val bytes = response.body.readBounded(MAX_AUDIO_BYTES, AUDIO_LIMIT_GUIDANCE)
             val contentType = response.header("Content-Type").orEmpty()
             if (contentType.contains("json") || bytes.firstOrNull() == '{'.code.toByte()) {
                 val json = runCatching { JSONObject(String(bytes, Charsets.UTF_8)) }.getOrNull()
@@ -62,18 +65,6 @@ class BaiduSpeechProvider(
         }
     }
 
-    private fun splitForBaidu(text: String): List<String> {
-        val chunks = mutableListOf<String>()
-        var remaining = text
-        while (remaining.isNotEmpty()) {
-            var end = minOf(remaining.length, 300)
-            while (end > 1 && remaining.substring(0, end).toByteArray(Charsets.UTF_8).size > 900) end--
-            chunks += remaining.substring(0, end)
-            remaining = remaining.substring(end)
-        }
-        return chunks
-    }
-
     private suspend fun requestToken(): String {
         val body = FormBody.Builder()
             .add("grant_type", "client_credentials")
@@ -83,7 +74,7 @@ class BaiduSpeechProvider(
         val request = Request.Builder().url(TOKEN_URL).post(body).build()
         return client.newCall(request).readCancellable { response ->
             if (!response.isSuccessful) throw CloudServiceException.http(provider, response.code)
-            val json = JSONObject(response.body.string())
+            val json = JSONObject(response.body.readBounded(64 * 1024, "云服务响应超过安全上限，请稍后重试").toString(Charsets.UTF_8))
             tokenExpiresAt = android.os.SystemClock.elapsedRealtime() +
                 (json.optLong("expires_in", 3600).coerceIn(120, 2_592_000) - 60) * 1000
             json.optString("access_token").takeIf { it.isNotBlank() }
@@ -92,6 +83,8 @@ class BaiduSpeechProvider(
     }
 
     companion object {
+        private const val MAX_AUDIO_BYTES = 24 * 1024 * 1024
+        private const val AUDIO_LIMIT_GUIDANCE = "音频超过单句限制，请拆分文稿后重试"
         private const val TOKEN_URL = "https://aip.baidubce.com/oauth/2.0/token"
         private const val TTS_URL = "https://tsn.baidu.com/text2audio"
     }

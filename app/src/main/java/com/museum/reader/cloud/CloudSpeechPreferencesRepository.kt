@@ -2,6 +2,7 @@ package com.museum.reader.cloud
 
 import android.content.Context
 import androidx.core.content.edit
+import com.museum.reader.data.SettingsAccess
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -9,7 +10,7 @@ import java.util.Locale
 class CloudSpeechPreferencesRepository(context: Context) {
     private val preferences = context.getSharedPreferences("cloud_speech_settings", Context.MODE_PRIVATE)
 
-    fun load(): CloudSpeechPreferences = CloudSpeechPreferences(
+    fun load(): CloudSpeechPreferences = synchronized(SettingsAccess.lock) { CloudSpeechPreferences(
         enabled = preferences.getBoolean("enabled", false),
         primaryProvider = runCatching {
             CloudProvider.valueOf(preferences.getString("primary_provider", CloudProvider.XUNFEI.name).orEmpty())
@@ -17,9 +18,9 @@ class CloudSpeechPreferencesRepository(context: Context) {
         xunfeiVoice = preferences.getString("xunfei_voice", "xiaoyan").orEmpty().ifBlank { "xiaoyan" },
         baiduVoice = preferences.getString("baidu_voice", "0").orEmpty().ifBlank { "0" },
         dailyCharacterLimit = preferences.getInt("daily_limit", 20_000).coerceIn(1_000, 200_000),
-    )
+    ) }
 
-    fun save(value: CloudSpeechPreferences, synchronous: Boolean = false) {
+    fun save(value: CloudSpeechPreferences, synchronous: Boolean = false) = synchronized(SettingsAccess.lock) {
         val editor = preferences.edit().apply {
             putBoolean("enabled", value.enabled)
             putString("primary_provider", value.primaryProvider.name)

@@ -78,6 +78,7 @@ object PlaybackController {
                     Intent(app, TtsPlaybackService::class.java).setAction(TtsPlaybackService.ACTION_PLAY)
                         .putExtra("request", revision))
             } catch (_: RuntimeException) {
+                pendingStart = null
                 publish(app, next.copy(status = PlaybackStatus.ERROR, error = "无法启动后台播放，请返回应用后重试"))
             }
         }

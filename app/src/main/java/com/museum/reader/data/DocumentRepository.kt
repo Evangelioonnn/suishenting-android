@@ -287,11 +287,11 @@ class DocumentRepository(
         }
     }
 
-    suspend fun toggleBookmark(documentId: String, sentenceId: String): Boolean {
+    suspend fun toggleBookmark(documentId: String, sentenceId: String): Boolean = database.withTransaction {
         val exists = dao.bookmarks(documentId).any { it.sentenceId == sentenceId }
         if (exists) dao.deleteBookmark(documentId, sentenceId)
         else dao.putBookmark(BookmarkEntity(UUID.randomUUID().toString(), documentId, sentenceId, System.currentTimeMillis()))
-        return !exists
+        !exists
     }
 
     suspend fun playlists(): List<ReaderPlaylist> {
@@ -327,7 +327,7 @@ class DocumentRepository(
 
     suspend fun deletePlaylist(id: String) = dao.deletePlaylist(id)
 
-    suspend fun savePlaylistPosition(id: String, documentId: String) {
+    suspend fun savePlaylistPosition(id: String, documentId: String) = database.withTransaction {
         if (dao.playlistItems(id).any { it.documentId == documentId } && dao.document(documentId) != null)
             dao.savePlaylistPosition(id, documentId)
     }
@@ -346,9 +346,15 @@ class DocumentRepository(
 
     suspend fun putAudio(audio: SentenceAudio) {
         database.withTransaction {
-        if (audio.archivedAt == null) dao.archivePreviousAudio(
-            audio.sentenceId, audio.kind.name, audio.provider, audio.voiceId, audio.id, System.currentTimeMillis(),
-        )
+        if (audio.archivedAt == null) {
+            if (audio.kind == AudioKind.RECORDING) {
+                dao.archivePreviousRecording(audio.sentenceId, audio.id, System.currentTimeMillis())
+            } else {
+                dao.archivePreviousAudio(
+                    audio.sentenceId, audio.kind.name, audio.provider, audio.voiceId, audio.id, System.currentTimeMillis(),
+                )
+            }
+        }
         dao.putAudio(
             AudioAssetEntity(
                 id = audio.id,
@@ -411,8 +417,9 @@ class DocumentRepository(
         expectedFingerprint: String? = null,
         restoreSettings: Boolean = true,
         acceptRouteWarnings: Boolean = false,
+        validateSettings: (() -> Unit)? = null,
     ): BackupImportResult = BackupStore(database).restore(
-        graph, policy, audio, operationId, expectedFingerprint, restoreSettings, acceptRouteWarnings,
+        graph, policy, audio, operationId, expectedFingerprint, restoreSettings, acceptRouteWarnings, validateSettings,
     ).also { contentHashes.clear() }
 
     suspend fun importBackup(

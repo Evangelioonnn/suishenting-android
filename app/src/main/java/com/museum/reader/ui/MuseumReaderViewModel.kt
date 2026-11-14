@@ -102,6 +102,7 @@ data class AppUiState(
     val pendingBackup: PreparedBackup? = null,
     val backupWarnings: List<String> = emptyList(),
     val backupRecoveryPoint: String? = null,
+    val backupResultIsExport: Boolean = false,
     val timerEndAt: Long? = null,
     val viewedIndex: Int = 0,
     val cloudSpeech: CloudSpeechUiState = CloudSpeechUiState(),
@@ -840,8 +841,10 @@ class MuseumReaderViewModel(application: Application) : AndroidViewModel(applica
         viewModelScope.launch(operationErrors) {
             runOperationCatching {
                 withContext(Dispatchers.IO) { backupManager.export(uri, mutableState.value.settings) }
-            }.onSuccess {
-                mutableState.value = mutableState.value.copy(isBusy = false, message = "备份已保存")
+            }.onSuccess { result ->
+                mutableState.value = mutableState.value.copy(isBusy = false,
+                    backupWarnings = result.warnings, backupRecoveryPoint = null, backupResultIsExport = true,
+                    message = if (result.warnings.isEmpty()) "备份已保存" else "备份已保存，有音频需要注意，请查看详情")
             }.onFailure { error ->
                 showFailure(UserOperation.BACKUP_EXPORT, error)
             }
@@ -897,9 +900,9 @@ class MuseumReaderViewModel(application: Application) : AndroidViewModel(applica
                     documents = documents, playlists = playlists, currentDocument = null,
                     content = SegmentedText("", emptyList()), readerLayout = null,
                     settings = settingsRepository.load(), bookmarks = emptyList(), versions = emptyList(),
-                    backupWarnings = result.warnings, backupRecoveryPoint = result.recoveryPoint,
+                    backupWarnings = result.warnings, backupRecoveryPoint = result.recoveryPoint, backupResultIsExport = false,
                     isBusy = false, message = "恢复已提交：文稿 " + result.documentCount + " 篇，音频 " + result.audioCount + " 条" +
-                        if (result.warnings.isNotEmpty()) "，有未恢复音频，请查看详情" else "")
+                        if (result.warnings.isNotEmpty()) "，有内容未完整恢复，请查看详情" else "")
                 refreshCloudState()
                 publishDefaults()
             } catch (cancelled: CancellationException) { throw cancelled }
@@ -912,7 +915,7 @@ class MuseumReaderViewModel(application: Application) : AndroidViewModel(applica
     }
 
     fun dismissBackupResult() {
-        mutableState.value = mutableState.value.copy(backupWarnings = emptyList(), backupRecoveryPoint = null)
+        mutableState.value = mutableState.value.copy(backupWarnings = emptyList(), backupRecoveryPoint = null, backupResultIsExport = false)
     }
 
     fun selectSentence(index: Int) {

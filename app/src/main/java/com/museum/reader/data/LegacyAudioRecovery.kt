@@ -20,7 +20,8 @@ internal class LegacyAudioRecovery(
         val assets = repository.audioAssets(documentId)
         val referenced = assets.mapTo(hashSetOf()) { File(it.path).canonicalPath }
         fun key(sentenceId: String, kind: AudioKind, provider: String?, voice: String?) =
-            listOf(sentenceId, kind.name, provider.orEmpty(), voice.orEmpty()).joinToString("\u0000")
+            (if (kind == AudioKind.RECORDING) listOf(sentenceId, kind.name)
+            else listOf(sentenceId, kind.name, provider.orEmpty(), voice.orEmpty())).joinToString("\u0000")
         val activeKeys = assets.filter { it.archivedAt == null && File(it.path).isFile }
             .mapTo(hashSetOf()) { key(it.sentenceId, it.kind, it.provider, it.voiceId) }
         val pendingJournals = File(context.filesDir, "recording-pending").listFiles().orEmpty()

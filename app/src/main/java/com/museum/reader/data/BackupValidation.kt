@@ -35,3 +35,14 @@ internal fun historySentences(payload: String): List<HistorySentence> {
         throw IllegalArgumentException("备份历史句子记录不完整，请重新选择有效备份", error)
     }
 }
+
+/** Accept legacy split boundaries, but every non-whitespace body character must occur in order. */
+internal fun historyMatchesBody(references: List<HistorySentence>, body: String): Boolean {
+    var position = 0
+    for (reference in references) {
+        while (position < body.length && body[position].isWhitespace()) position++
+        if (!body.startsWith(reference.text, position)) return false
+        position += reference.text.length
+    }
+    return body.substring(position).isBlank()
+}

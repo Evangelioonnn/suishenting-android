@@ -6,6 +6,8 @@ param(
     [string]$TestApkPath = '',
     [string]$EvidenceDirectory = '',
     [string]$SourceManifest = '',
+    [int]$ExpectedTestCount = 0,
+    [string]$DeviceEvidenceName = '',
     [switch]$SkipInstall,
     [string]$AdbPath = "$env:ANDROID_HOME\platform-tools\adb.exe"
 )
@@ -53,11 +55,15 @@ if (-not $SkipInstall) {
         if ($actualHash -ine (Get-FileHash -LiteralPath $pair[1] -Algorithm SHA256).Hash) { throw 'Installed APK does not match test evidence input' }
     }
 }
-$runnerArgs = @('-s', $Serial, 'shell', 'am', 'instrument', '-w', '-r')
+$runnerArgs = @('-s', $Serial, 'shell', 'am', 'instrument', '-w', '-r', '-e', 'evidenceName', $EvidenceName)
+if ($DeviceEvidenceName) {
+    if ($DeviceEvidenceName -notmatch '^[A-Za-z0-9_-]+$') { throw 'Use a simple unique device evidence name' }
+    $runnerArgs += @('-e', 'evidenceDir', $DeviceEvidenceName)
+}
 if ($TestClass) { $runnerArgs += @('-e', 'class', $TestClass) }
 else {
-    # These require a rooted API33 TalkBack device or an isolated long measurement run.
-    $excluded = 'com.museum.reader.ui.ActualTalkBackFlowTest,com.museum.reader.ui.LocalPerformanceTest'
+    # Dedicated scenarios require actual TalkBack, a long measurement run, or an empty synthetic app.
+    $excluded = 'com.museum.reader.ui.ActualTalkBackFlowTest,com.museum.reader.ui.LocalPerformanceTest,com.museum.reader.ui.BackupExportIntegrityUiTest'
     $runnerArgs += @('-e', 'notClass', $excluded)
 }
 $runnerArgs += 'com.museum.reader.test/androidx.test.runner.AndroidJUnitRunner'
@@ -65,6 +71,9 @@ $raw = & $AdbPath @runnerArgs 2>&1 | Out-String
 $raw | Set-Content -LiteralPath (Join-Path $evidencePath "$EvidenceName.txt") -Encoding utf8
 $passed = $raw -match 'OK \((\d+) tests?\)' -and $raw -notmatch 'FAILURES!!!|INSTRUMENTATION_FAILED|Process crashed'
 $testCount = if ($passed) { [int][regex]::Match($raw, 'OK \((\d+) tests?\)').Groups[1].Value } else { 0 }
+$resultCodes = @([regex]::Matches($raw, '(?m)^INSTRUMENTATION_STATUS_CODE: (-?[0-9]+)\s*$') | ForEach-Object { [int]$_.Groups[1].Value } | Where-Object { $_ -ne 1 })
+$skipped = @($resultCodes | Where-Object { $_ -ne 0 -and $_ -ne -1 -and $_ -ne -2 }).Count
+if ($skipped -gt 0 -or $resultCodes.Count -ne $testCount -or ($ExpectedTestCount -gt 0 -and $testCount -ne $ExpectedTestCount)) { $passed = $false }
 $deviceInfo = & $AdbPath -s $Serial shell getprop ro.build.version.sdk
 [ordered]@{
     serial = $Serial
@@ -73,6 +82,9 @@ $deviceInfo = & $AdbPath -s $Serial shell getprop ro.build.version.sdk
     testClass = $TestClass
     passed = $passed
     passedTests = $testCount
+    expectedTests = $ExpectedTestCount
+    skippedTests = $skipped
+    completedStatusCount = $resultCodes.Count
     appSha256 = $appHash
     testSha256 = $testHash
     sourceCommit = $sourceCommit

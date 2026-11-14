@@ -18,8 +18,8 @@ android {
         applicationId = "com.museum.reader"
         minSdk = 26
         targetSdk = 36
-        versionCode = 13
-        versionName = "0.9.4"
+        versionCode = 21
+        versionName = "0.9.12"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

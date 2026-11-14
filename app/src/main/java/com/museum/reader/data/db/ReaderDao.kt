@@ -67,6 +67,9 @@ interface ReaderDao {
     @Upsert
     suspend fun putVersion(version: DocumentVersionEntity)
 
+    @Query("SELECT documentId FROM document_versions WHERE id = :id")
+    suspend fun versionOwner(id: String): String?
+
     @Query("SELECT id, documentId, CASE WHEN length(title) > 50000 THEN '' ELSE title END AS title, CASE WHEN length(text) > 50000 THEN '' ELSE text END AS text, createdAt, CASE WHEN length(sentenceSnapshot) > 50000 THEN '' ELSE sentenceSnapshot END AS sentenceSnapshot FROM document_versions WHERE documentId = :documentId ORDER BY createdAt DESC")
     suspend fun rawVersions(documentId: String): List<DocumentVersionEntity>
 
@@ -79,14 +82,29 @@ interface ReaderDao {
     @Query("SELECT * FROM bookmarks WHERE documentId = :documentId")
     suspend fun bookmarks(documentId: String): List<BookmarkEntity>
 
+    @Query("SELECT * FROM bookmarks WHERE id = :id")
+    suspend fun bookmark(id: String): BookmarkEntity?
+
     @Upsert
     suspend fun putBookmark(bookmark: BookmarkEntity)
 
     @Query("DELETE FROM bookmarks WHERE documentId = :documentId AND sentenceId = :sentenceId")
     suspend fun deleteBookmark(documentId: String, sentenceId: String)
 
+    @Query("DELETE FROM bookmarks WHERE documentId = :documentId")
+    suspend fun clearBookmarks(documentId: String)
+
     @Query("SELECT id, substr(title, 1, 1000) AS title, createdAt, updatedAt, lastDocumentId FROM playlists ORDER BY updatedAt DESC")
     suspend fun playlists(): List<PlaylistEntity>
+
+    @Query("SELECT substr(title, :start, 40000) FROM playlists WHERE id = :id")
+    suspend fun playlistTitleChunk(id: String, start: Int): String?
+
+    @Transaction
+    suspend fun fullPlaylists(): List<PlaylistEntity> {
+        val oversized = oversizedPlaylistIds().toSet()
+        return playlists().map { if (it.id in oversized) it.copy(title = chunks { start -> playlistTitleChunk(it.id, start) }) else it }
+    }
 
     @Query("SELECT id FROM playlists WHERE length(title) > 1000")
     suspend fun oversizedPlaylistIds(): List<String>

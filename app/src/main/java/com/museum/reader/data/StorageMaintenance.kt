@@ -123,7 +123,7 @@ class StorageMaintenance(
             require(!actual.protected) { "所选音频用于播放、历史、恢复区或待确认录音，请先处理后再清理" }
             if (!cloudOnly) require(actual.old) { "有效本人录音不能作为旧音频清理" }
         }
-        return perform(expected, emptyList(), null)
+        return perform(expected, emptyList(), null, cloudOnly)
     }
 
     suspend fun cleanupUnlinked(expected: UnlinkedAudio): CleanupResult {
@@ -151,19 +151,29 @@ class StorageMaintenance(
         return perform(audio, emptyList(), expected)
     }
 
-    private suspend fun perform(audio: List<SentenceAudio>, extra: List<File>, purge: TrashedDocumentInfo?): CleanupResult {
+    private suspend fun perform(audio: List<SentenceAudio>, extra: List<File>, purge: TrashedDocumentInfo?, cloudOnly: Boolean = false): CleanupResult {
         val files = (audio.map { AudioFiles.requireOwned(context, File(it.path)) } + extra)
             .distinctBy { it.path }
         require(files.none { it.path in inUsePaths() || it.path in pendingPaths() }) { "音频仍在使用，请停止播放后重试" }
         val id = UUID.randomUUID().toString()
         val journal = File(journals, "$id.json")
         val record = JSONObject().put("id", id).put("files", JSONArray(files.map { it.path }))
+        val extraVersions = extra.associate { it.path to (it.length() to it.lastModified()) }
         AudioFiles.writeAtomic(journal, record.toString())
         try {
             fault("before_commit")
             database.withTransaction {
                 val actual = repository.allAudioAssets().associateBy { it.id }
                 require(audio.all { actual[it.id] == it }) { "音频已变化，请刷新后重新确认" }
+                require(files.none { it.path in inUsePaths() || it.path in pendingPaths() }) { "音频仍在使用，请停止播放后重试" }
+                require(extra.none { file -> actual.values.any { ownedPath(it.path) == file.path } ||
+                    extraVersions[file.path] != (file.length() to file.lastModified()) }) { "待确认文件已变化，请刷新后重新确认" }
+                if (purge == null && audio.isNotEmpty()) {
+                    val protected = overview().items.associateBy { it.audio.id }
+                    require(audio.all { asset -> protected[asset.id]?.let { !it.protected && (cloudOnly || it.old) } == true }) {
+                        "所选音频的保护状态已变化，请刷新后重新确认"
+                    }
+                }
                 if (purge != null) {
                     val doc = dao.anyDocument(purge.id) ?: error("文稿已变化")
                     require(doc.trashedAt == purge.trashedAt &&

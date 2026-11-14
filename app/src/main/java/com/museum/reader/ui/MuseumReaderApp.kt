@@ -371,7 +371,7 @@ fun MuseumReaderApp(viewModel: MuseumReaderViewModel) {
             BackupRestoreDialog(prepared.preview, viewModel::cancelBackup, viewModel::confirmBackup)
         }
         if (ui.backupWarnings.isNotEmpty() || ui.backupRecoveryPoint != null) {
-            BackupResultDialog(ui.backupWarnings, ui.backupRecoveryPoint != null, viewModel::dismissBackupResult)
+            BackupResultDialog(ui.backupWarnings, ui.backupRecoveryPoint != null, viewModel::dismissBackupResult, ui.backupResultIsExport)
         }
         ui.failure?.let { failure ->
             OperationFailureDialog(failure, onDismiss = viewModel::dismissFailure, onRecover = {

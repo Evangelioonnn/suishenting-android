@@ -45,4 +45,49 @@ class BackupDialogTest {
         compose.onNodeWithText("确认恢复").performClick()
         compose.runOnIdle { assertEquals(BackupConflictPolicy.REPLACE, chosen) }
     }
+
+    @Test fun routeOnlyConflictOffersPoliciesAndRequiresRouteConfirmation() {
+        var chosen: BackupConflictPolicy? = null
+        var settings = true
+        compose.runOnUiThread { compose.activity.setContent {
+            MuseumReaderTheme {
+                BackupRestoreDialog(BackupPreview(0, 1, emptyList(), "test", routeConflictTitles = listOf("本机不同的路线")),
+                    {}, { policy, restoreSettings -> chosen = policy; settings = restoreSettings })
+            }
+        } }
+        compose.onNodeWithText("冲突路线 1 条").assertExists()
+        compose.onNodeWithText("覆盖并保留恢复点").performScrollTo().performClick()
+        compose.onNodeWithText("确认恢复").assertIsNotEnabled()
+        compose.onNodeWithText("确认以备份内容覆盖冲突路线").performScrollTo().performClick()
+        compose.onNodeWithText("确认恢复").assertIsEnabled().performClick()
+        compose.runOnIdle { assertEquals(BackupConflictPolicy.REPLACE, chosen); assertFalse(settings) }
+    }
+
+    @Test fun documentAndRouteReplacementRequireBothSeparateConfirmations() {
+        compose.runOnUiThread { compose.activity.setContent {
+            MuseumReaderTheme {
+                BackupRestoreDialog(BackupPreview(0, 0, listOf("冲突文稿"), "test", routeConflictTitles = listOf("冲突路线")), {}, { _, _ -> })
+            }
+        } }
+        compose.onNodeWithText("覆盖并保留恢复点").performScrollTo().performClick()
+        compose.onNodeWithText("确认以备份内容覆盖冲突文稿").performScrollTo().performClick()
+        compose.onNodeWithText("确认恢复").assertIsNotEnabled()
+        compose.onNodeWithText("确认以备份内容覆盖冲突路线").performScrollTo().performClick()
+        compose.onNodeWithText("确认恢复").assertIsEnabled()
+        compose.onNodeWithText("确认以备份内容覆盖冲突文稿").performScrollTo().performClick()
+        compose.onNodeWithText("确认恢复").assertIsNotEnabled()
+    }
+
+    @Test fun metadataDifferenceExplainsTheConflictAndDefaultsToKeepingLocal() {
+        var policy: BackupConflictPolicy? = null
+        compose.runOnUiThread { compose.activity.setContent {
+            MuseumReaderTheme {
+                BackupRestoreDialog(BackupPreview(0, 0, listOf("正文相同"), "test", metadataConflictTitles = listOf("正文相同")),
+                    {}, { chosen, _ -> policy = chosen })
+            }
+        } }
+        compose.onNodeWithText("历史、草稿或重点句", substring = true).assertExists()
+        compose.onNodeWithText("确认恢复").performClick()
+        compose.runOnIdle { assertEquals(BackupConflictPolicy.KEEP_LOCAL, policy) }
+    }
 }

@@ -19,7 +19,8 @@ class OperationFeedbackTest {
     }
     @Test fun explicitValidationKeepsTheActionableBusinessReason() {
         for (message in listOf("文件超过 20 MB，请精简后再导入", "文字编码损坏或无法识别，请另存为 UTF-8 后导入",
-            "备份包版本过新，请升级应用", "手机空间不足以生成安全备份", "有待确认录音，请先保存或放弃")) {
+            "备份包版本过新，请升级应用", "手机空间不足以生成安全备份", "有待确认录音，请先保存或放弃",
+            "本机资料已变化，请重新选择备份并预览", "预览后本机资料已变化，请重新预览恢复")) {
             assertEquals(message, operationMessage(IllegalArgumentException(message), UserOperation.IMPORT))
         }
     }

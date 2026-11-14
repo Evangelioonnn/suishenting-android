@@ -21,7 +21,11 @@ data class BackupPreview(
     val audioCount: Int = 0,
     val warnings: List<String> = emptyList(),
     val audioConflictTitles: List<String> = emptyList(),
-)
+    val metadataConflictTitles: List<String> = emptyList(),
+    val routeConflictTitles: List<String> = emptyList(),
+) {
+    val hasConflicts: Boolean get() = conflictTitles.isNotEmpty() || routeConflictTitles.isNotEmpty()
+}
 
 data class BackupExportData(val manifest: JSONObject, val audio: List<SentenceAudio>)
 
@@ -44,6 +48,7 @@ internal data class BackupGraph(
 /** Database-only portion of restore. Files are staged by BackupManager before this transaction. */
 internal class BackupStore(private val database: ReaderDatabase) {
     private val dao = database.readerDao()
+    private val metadata = BackupMetadata(dao)
 
     suspend fun export(settings: ReaderSettings): BackupExportData = database.withTransaction {
         require(!dao.hasOversizedNames()) { "备份中有名称超过 1000 字，请缩短名称后再导出；原资料保留" }
@@ -169,7 +174,7 @@ internal class BackupStore(private val database: ReaderDatabase) {
                     val references = historySentences(payload)
                     val byId = sentences.associateBy { it.id }
                     require(references.all { reference -> byId[reference.id]?.text == reference.text } &&
-                        (references.isNotEmpty() || body.isBlank())) { "备份历史句子引用或文字不一致" }
+                        historyMatchesBody(references, body)) { "备份历史句子引用、顺序或正文不一致" }
                 }
                 DocumentVersionEntity(versionId, id,
                     checkedName(entry.optString("title", document.title), "备份历史文稿名称"), body,
@@ -191,7 +196,15 @@ internal class BackupStore(private val database: ReaderDatabase) {
             val route = playlists.getJSONObject(i)
             checkedName(route.optString("title", "讲解路线"), "备份路线名称")
             require(playlistIds.add(route.requiredId("id"))) { "备份路线编号重复" }
-            require((route.optJSONArray("documentIds") ?: JSONArray()).length() <= 10_000) { "路线条目超限" }
+            val stations = route.optJSONArray("documentIds") ?: JSONArray()
+            require(stations.length() <= 10_000) { "路线条目超限" }
+            val stationIds = HashSet<String>()
+            for (station in 0 until stations.length()) {
+                val id = stations.getString(station)
+                require(id.matches(Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,179}")) && stationIds.add(id)) {
+                    "备份路线含无效或重复站点，请检查备份后重试"
+                }
+            }
         }
         return BackupGraph(root, documents, root.optJSONObject("settings")?.let(::settingsFromBackup))
     }
@@ -200,15 +213,19 @@ internal class BackupStore(private val database: ReaderDatabase) {
         val local = dao.documentsIncludingTrash().associateBy { it.id }
         val localAudio = dao.allAudioAssets()
         val audioConflicts = audioConflicts(graph, audio, localAudio)
+        val metadataConflicts = metadata.conflicts(graph, local)
         val added = graph.documents.count { it.document.id !in local }
-        val same = graph.documents.count { entry -> entry.document.id !in audioConflicts &&
+        val same = graph.documents.count { entry -> entry.document.id !in audioConflicts && entry.document.id !in metadataConflicts &&
             local[entry.document.id]?.let { sameContent(it, entry.document) } == true }
         val conflicts = graph.documents.filter { entry ->
-            local[entry.document.id]?.let { !sameContent(it, entry.document) || entry.document.id in audioConflicts } == true
+            local[entry.document.id]?.let { !sameContent(it, entry.document) || entry.document.id in audioConflicts ||
+                entry.document.id in metadataConflicts } == true
         }.map { it.document.title }
-        BackupPreview(added, same, conflicts, fingerprint(local.values, localAudio),
+        BackupPreview(added, same, conflicts, metadata.fingerprint(local.values, localAudio),
             warnings = routeWarnings(graph, local.keys),
-            audioConflictTitles = graph.documents.filter { it.document.id in audioConflicts }.map { it.document.title })
+            audioConflictTitles = graph.documents.filter { it.document.id in audioConflicts }.map { it.document.title },
+            metadataConflictTitles = graph.documents.filter { it.document.id in metadataConflicts }.map { it.document.title },
+            routeConflictTitles = metadata.routeConflicts(graph, local.keys))
     }
 
     suspend fun restore(
@@ -219,6 +236,7 @@ internal class BackupStore(private val database: ReaderDatabase) {
         expectedFingerprint: String? = null,
         restoreSettings: Boolean = true,
         acceptRouteWarnings: Boolean = false,
+        validateSettings: (() -> Unit)? = null,
     ): BackupImportResult = database.withTransaction {
         if (dao.hasRestoreReceipt(operationId)) return@withTransaction BackupImportResult(0, null)
         val local = dao.documentsIncludingTrash().associateBy { it.id }.toMutableMap()
@@ -226,9 +244,11 @@ internal class BackupStore(private val database: ReaderDatabase) {
         require(routeWarnings.isEmpty() || acceptRouteWarnings) { "路线包含找不到的文稿，请先预览并确认缺失站点" }
         val localAudio = dao.allAudioAssets()
         val audioConflicts = audioConflicts(graph, audio, localAudio)
-        require(expectedFingerprint == null || expectedFingerprint == fingerprint(local.values, localAudio)) {
-            "预览后本机文稿已变化，请重新预览恢复"
+        val metadataConflicts = metadata.conflicts(graph, local)
+        require(expectedFingerprint == null || expectedFingerprint == metadata.fingerprint(local.values, localAudio)) {
+            "预览后本机资料已变化，请重新预览恢复"
         }
+        validateSettings?.invoke()
         val owners = dao.sentenceOwners().associate { it.id to it.documentId }.toMutableMap()
         val documentMap = HashMap<String, String>()
         val sentenceMap = HashMap<String, String>()
@@ -237,7 +257,7 @@ internal class BackupStore(private val database: ReaderDatabase) {
         for (backup in graph.documents) {
             val incoming = backup.document
             val old = local[incoming.id]
-            val conflict = old != null && (!sameContent(old, incoming) || incoming.id in audioConflicts)
+            val conflict = old != null && (!sameContent(old, incoming) || incoming.id in audioConflicts || incoming.id in metadataConflicts)
             if (conflict && policy == BackupConflictPolicy.KEEP_LOCAL) {
                 documentMap[incoming.id] = incoming.id
                 skipped += incoming.id
@@ -250,6 +270,9 @@ internal class BackupStore(private val database: ReaderDatabase) {
             val target = incoming.copy(id = targetId, title = if (copied) copyTitle(incoming.title) else incoming.title)
             val keepExisting = existing != null && sameContent(existing, target)
             val previous = dao.allSentences(targetId)
+            val previousVersions = dao.versions(targetId)
+            val sameRelated = existing != null && metadata.sameRelated(backup, targetId, previous)
+            val replaceRelated = !copied && conflict && policy == BackupConflictPolicy.REPLACE
             val known = previous.associateBy { it.id }
             val activeByOrdinal = previous.filter { it.retiredAt == null }.associateBy { it.ordinal }
             for (sentence in backup.sentences) {
@@ -287,42 +310,45 @@ internal class BackupStore(private val database: ReaderDatabase) {
             } else {
                 dao.putSentences(incomingSentences.filter { it.id !in known })
             }
-            val existingBookmarks = dao.bookmarks(targetId).mapTo(hashSetOf()) { it.sentenceId }
-            backup.bookmarks.forEach {
-                val sentenceId = sentenceMap.getValue(it.sentenceId)
-                if (existingBookmarks.add(sentenceId)) dao.putBookmark(it.copy(
-                    id = stableId("bookmark:" + targetId + ":" + sentenceId), documentId = targetId, sentenceId = sentenceId,
-                ))
-            }
-            backup.versions.forEach { version ->
-                val snapshot = version.sentenceSnapshot?.let { value ->
-                    val array = JSONArray(value)
-                    for (i in 0 until array.length()) {
-                        val entry = array.getJSONObject(i)
-                        sentenceMap[entry.optString("id")]?.let { entry.put("id", it) }
-                    }
-                    array.toString()
+            if (replaceRelated) dao.clearBookmarks(targetId)
+            if (!sameRelated || replaceRelated) {
+                val existingBookmarks = dao.bookmarks(targetId).mapTo(hashSetOf()) { it.sentenceId }
+                backup.bookmarks.forEach {
+                    val sentenceId = sentenceMap.getValue(it.sentenceId)
+                    if (existingBookmarks.add(sentenceId)) dao.putBookmark(it.copy(
+                        id = metadata.bookmarkId(targetId, sentenceId), documentId = targetId, sentenceId = sentenceId,
+                    ))
                 }
-                dao.putVersion(version.copy(id = stableId("version:" + targetId + ":" + version.id),
-                    documentId = targetId, sentenceSnapshot = snapshot))
             }
-            dao.trimVersions(targetId, 5)
+            if (!sameRelated || replaceRelated) {
+                backup.versions.forEach { version ->
+                    dao.putVersion(version.copy(id = metadata.versionId(targetId, version.id, copied, previousVersions),
+                        documentId = targetId, sentenceSnapshot = metadata.mappedSnapshot(version.sentenceSnapshot, sentenceMap)))
+                }
+                dao.trimVersions(targetId, 5)
+            }
+            if (replaceRelated && backup.draft == null) dao.deleteDraft(targetId)
             backup.draft?.let {
-                if (!keepExisting || dao.draft(targetId) == null) dao.putDraft(it.copy(documentId = targetId))
+                if (replaceRelated || !keepExisting || dao.draft(targetId) == null) dao.putDraft(it.copy(documentId = targetId))
             }
             local[targetId] = existing?.takeIf { keepExisting } ?: target
         }
-        val currentAudio = dao.allAudioAssets().associateBy { it.id }
+        val currentAudio = dao.allAudioAssets().associateBy { it.id }.toMutableMap()
         var audioCount = 0
         for (asset in audio) {
             if (asset.documentId in skipped) continue
             val targetDocument = documentMap[asset.documentId] ?: error("音频引用不存在的文稿")
             val targetSentence = sentenceMap[asset.sentenceId] ?: error("音频引用不存在的句子")
             val copied = targetDocument != asset.documentId
-            val id = if (copied || currentAudio[asset.id]?.let { it.documentId != targetDocument ||
-                    it.sentenceId != targetSentence || it.textHash != asset.textHash || it.kind != asset.kind.name ||
-                    it.provider != asset.provider || it.voiceId != asset.voiceId } == true)
-                stableId("audio:" + graph.fingerprint + ":" + targetDocument + ":" + asset.id) else asset.id
+            fun sameIdentity(existing: AudioAssetEntity) = existing.documentId == targetDocument &&
+                existing.sentenceId == targetSentence && existing.textHash == asset.textHash && existing.kind == asset.kind.name &&
+                existing.provider == asset.provider && existing.voiceId == asset.voiceId
+            val remap = copied || currentAudio[asset.id]?.let { !sameIdentity(it) } == true
+            val id = if (!remap) asset.id else (0..100_000).firstNotNullOfOrNull { number ->
+                val suffix = if (number == 0) "" else ":collision:$number"
+                val candidate = stableId("audio:" + graph.fingerprint + ":" + targetDocument + ":" + asset.id + suffix)
+                candidate.takeIf { currentAudio[it]?.let(::sameIdentity) != false }
+            } ?: error("音频编号无法安全映射，请重新校验备份")
             val existing = currentAudio[id]
             if (existing != null && existing.textHash == asset.textHash && existing.sentenceId == targetSentence &&
                 (existing.archivedAt == null) == (asset.archivedAt == null) && File(existing.path).isFile &&
@@ -339,12 +365,14 @@ internal class BackupStore(private val database: ReaderDatabase) {
                 if (asset.kind == AudioKind.RECORDING) dao.archivePreviousRecording(targetSentence, id, System.currentTimeMillis())
                 else dao.archivePreviousAudio(targetSentence, asset.kind.name, asset.provider, asset.voiceId, id, System.currentTimeMillis())
             }
-            dao.putAudio(AudioAssetEntity(id, targetDocument, targetSentence, asset.kind.name, asset.provider,
-                asset.voiceId, asset.path, asset.textHash, asset.durationMs, System.currentTimeMillis(), asset.archivedAt))
+            val restored = AudioAssetEntity(id, targetDocument, targetSentence, asset.kind.name, asset.provider,
+                asset.voiceId, asset.path, asset.textHash, asset.durationMs, System.currentTimeMillis(), asset.archivedAt)
+            dao.putAudio(restored)
+            currentAudio[id] = restored
             audioCount++
         }
         val playlistArray = graph.root.optJSONArray("playlists") ?: JSONArray()
-        val localRoutes = dao.playlists().associateBy { it.id }
+        val localRoutes = dao.fullPlaylists().associateBy { it.id }
         for (i in 0 until playlistArray.length()) {
             val item = playlistArray.getJSONObject(i)
             val sourceId = item.requiredId("id")
@@ -356,24 +384,28 @@ internal class BackupStore(private val database: ReaderDatabase) {
             val old = localRoutes[sourceId]
             if (old != null && policy == BackupConflictPolicy.KEEP_LOCAL) continue
             val title = item.optString("title", "讲解路线")
+            val lastDocumentId = item.nullableString("lastDocumentId")?.let { documentMap[it] ?: it }?.takeIf { it in mappedIds }
+            fun matches(route: PlaylistEntity, ids: List<String>) = route.title == title &&
+                route.lastDocumentId == lastDocumentId && ids == mappedIds
+            if (old != null && matches(old, dao.playlistItems(sourceId).map { it.documentId })) continue
             var targetId = sourceId
             if (old != null && policy == BackupConflictPolicy.COPY) {
-                if (old.title == title && dao.playlistItems(sourceId).map { it.documentId } == mappedIds) continue
                 var number = 0
                 while (true) {
                     targetId = stableId("route:" + graph.fingerprint + ":" + sourceId + if (number == 0) "" else ":copy:$number")
                     val candidate = localRoutes[targetId] ?: break
-                    if (candidate.title == title && dao.playlistItems(targetId).map { it.documentId } == mappedIds) break
+                    if (matches(candidate, dao.playlistItems(targetId).map { it.documentId })) break
                     number++
                 }
                 if (targetId in localRoutes) continue
             }
             dao.putPlaylist(PlaylistEntity(targetId, title,
                 item.optLong("createdAt", 0L), item.optLong("updatedAt", 0L),
-                item.nullableString("lastDocumentId")?.let { documentMap[it] ?: it }?.takeIf { it in mappedIds }))
+                lastDocumentId))
             dao.clearPlaylist(targetId)
             dao.putPlaylistItems(mappedIds.mapIndexed { index, documentId -> PlaylistItemEntity(targetId, documentId, index) })
         }
+        validateSettings?.invoke()
         dao.putRestoreReceipt(RestoreReceiptEntity(operationId, System.currentTimeMillis()))
         BackupImportResult(imported, graph.settings.takeIf { restoreSettings }, audioCount, warnings = routeWarnings)
     }
@@ -398,14 +430,6 @@ internal class BackupStore(private val database: ReaderDatabase) {
             a.speechRate == b.speechRate && a.sentencePauseMs == b.sentencePauseMs &&
             a.paragraphPauseMs == b.paragraphPauseMs &&
             (a.trashedAt == null) == (b.trashedAt == null)
-
-    private fun fingerprint(documents: Collection<DocumentEntity>, audio: List<AudioAssetEntity>) = DocumentRepository.textHash(
-        documents.sortedBy { it.id }.joinToString("\n") { it.copy(lastSentence = 0).toString() } + "\u0000" +
-            audio.sortedBy { it.id }.joinToString("\n") {
-                val file = File(it.path)
-                it.toString() + ":" + file.length() + ":" + file.lastModified()
-            },
-    )
 
     private fun copyTitle(title: String): String {
         val suffix = "（备份副本）"
@@ -463,30 +487,16 @@ internal class BackupStore(private val database: ReaderDatabase) {
         val sentenceMap = backup.sentences.associate { it.id to stableId("sentence:" + graph.fingerprint + ":" + id + ":" + it.id) }
         val expectedSentences = backup.sentences.map { it.copy(id = sentenceMap.getValue(it.id), documentId = id) }.toSet()
         if (dao.allSentences(id).toSet() != expectedSentences) return false
-        val expectedBookmarks = backup.bookmarks.map { it.copy(id = stableId("bookmark:" + id + ":" + sentenceMap.getValue(it.sentenceId)),
-            documentId = id, sentenceId = sentenceMap.getValue(it.sentenceId)) }.toSet()
-        if (dao.bookmarks(id).toSet() != expectedBookmarks || dao.draft(id) != backup.draft?.copy(documentId = id)) return false
-        val expectedVersions = backup.versions.sortedByDescending { it.createdAt }.take(5).map { version ->
-            val snapshot = version.sentenceSnapshot?.let { value ->
-                val array = JSONArray(value)
-                for (index in 0 until array.length()) {
-                    val item = array.getJSONObject(index)
-                    item.put("id", sentenceMap.getValue(item.getString("id")))
-                }
-                array.toString()
-            }
-            version.copy(id = stableId("version:" + id + ":" + version.id), documentId = id, sentenceSnapshot = snapshot)
-        }.toSet()
-        if (dao.versions(id).toSet() != expectedVersions) return false
+        if (!metadata.sameRelated(backup, id, dao.allSentences(id))) return false
         val expectedAudio = audio.filter { it.documentId == backup.document.id }
-        val actualAudio = localAudio.filter { it.documentId == id }
+        val actualAudio = localAudio.filter { it.documentId == id }.toMutableList()
         if (actualAudio.size != expectedAudio.size) return false
         return expectedAudio.all { expected ->
-            val actual = actualAudio.find { it.id == stableId("audio:" + graph.fingerprint + ":" + id + ":" + expected.id) }
-            actual != null && actual.sentenceId == sentenceMap[expected.sentenceId] && actual.kind == expected.kind.name &&
-                actual.provider == expected.provider && actual.voiceId == expected.voiceId && actual.textHash == expected.textHash &&
-                actual.archivedAt == expected.archivedAt && File(actual.path).isFile &&
-                AudioFiles.sha256(File(actual.path)) == AudioFiles.sha256(File(expected.path))
+            val actual = actualAudio.find { it.sentenceId == sentenceMap[expected.sentenceId] && it.kind == expected.kind.name &&
+                it.provider == expected.provider && it.voiceId == expected.voiceId && it.textHash == expected.textHash &&
+                it.archivedAt == expected.archivedAt && File(it.path).isFile &&
+                AudioFiles.sha256(File(it.path)) == AudioFiles.sha256(File(expected.path)) }
+            actual != null && actualAudio.remove(actual)
         }
     }
 }

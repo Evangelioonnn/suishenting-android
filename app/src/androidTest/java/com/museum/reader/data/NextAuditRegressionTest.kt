@@ -93,7 +93,10 @@ class NextAuditRegressionTest {
             assertTrue(runCatching { repo.importBackup(root.toString()) }.isFailure)
             assertTrue(repo.all().all { repo.versions(it.id).isEmpty() })
             docs.getJSONObject(1).getJSONArray("versions").getJSONObject(0).put("id", "another-version")
+            assertTrue(repo.previewBackup(repo.parseBackup(root.toString())).hasConflicts)
             repo.importBackup(root.toString())
+            assertTrue(repo.all().all { repo.versions(it.id).isEmpty() })
+            repo.importBackup(root.toString(), BackupConflictPolicy.REPLACE)
             assertEquals(2, repo.all().sumOf { repo.versions(it.id).size })
         } finally { database.close() }
     }
