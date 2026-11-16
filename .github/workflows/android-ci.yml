@@ -74,6 +74,7 @@ jobs:
         id: build
         run: |
           ./gradlew --no-daemon --no-parallel --no-build-cache --max-workers=2 \
+            --init-script tools/ci/official-repositories.gradle --stacktrace --info \
             -Dorg.gradle.jvmargs='-Xmx3g -Dfile.encoding=UTF-8' \
             -Pkotlin.compiler.execution.strategy=in-process \
             :app:assembleDebug :app:assembleRelease \

@@ -1,0 +1,14 @@
+// Only the CI invocation opts into this repository profile. Dependency versions stay in the project.
+settingsEvaluated { settings ->
+    settings.pluginManagement.repositories {
+        clear()
+        mavenCentral()
+        google()
+        gradlePluginPortal()
+    }
+    settings.dependencyResolutionManagement.repositories {
+        clear()
+        mavenCentral()
+        google()
+    }
+}
