@@ -1,0 +1,99 @@
+name: Android CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - '.gitignore'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - '.gitignore'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Build, unit tests and lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source
+        id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Java 25
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: '25'
+          overwrite-settings: false
+
+      - name: Validate Wrapper and set up Gradle
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+        with:
+          cache-provider: basic
+          cache-read-only: ${{ github.event_name == 'pull_request' || github.ref != 'refs/heads/main' }}
+          validate-wrappers: true
+          dependency-graph: disabled
+          build-scan-publish: false
+          add-job-summary-as-pr-comment: never
+
+      - name: Install the project Android SDK packages
+        run: |
+          mkdir -p ci-reports
+          sdk_manager="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$sdk_manager"
+          python3 - "$sdk_manager" <<'PY'
+          import subprocess
+          import sys
+          subprocess.run([sys.argv[1], '--licenses'], input='y\n' * 100,
+                         text=True, stdout=subprocess.DEVNULL, check=True)
+          PY
+          "$sdk_manager" 'platform-tools' 'platforms;android-36' 'build-tools;36.1.0' 2>&1 | tee ci-reports/sdk.log
+
+      - name: Record the toolchain
+        run: |
+          java -version 2>&1 | tee ci-reports/java-version.log
+          ./gradlew --version 2>&1 | tee ci-reports/gradle-version.log
+
+      - name: Build Debug and Release, run unit tests and lint
+        id: build
+        run: |
+          ./gradlew --no-daemon --no-parallel --no-build-cache --max-workers=2 \
+            -Dorg.gradle.jvmargs='-Xmx3g -Dfile.encoding=UTF-8' \
+            -Pkotlin.compiler.execution.strategy=in-process \
+            :app:assembleDebug :app:assembleRelease \
+            :app:testDebugUnitTest :app:lintDebug :app:lintRelease \
+            2>&1 | tee ci-reports/gradle-build.log
+
+      - name: Verify test and lint reports
+        if: ${{ always() && steps.build.outcome != 'skipped' }}
+        run: python3 tools/ci/verify_reports.py --minimum-tests 44 --output ci-reports/check-summary.json
+
+      - name: Save check reports
+        if: ${{ always() && steps.checkout.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-ci-reports-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 14
+          if-no-files-found: warn
+          path: |
+            ci-reports/
+            app/build/test-results/testDebugUnitTest/*.xml
+            app/build/reports/tests/testDebugUnitTest/
+            app/build/reports/lint-results-*.xml
+            app/build/reports/lint-results-*.html

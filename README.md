@@ -1,5 +1,7 @@
 # 随身听
 
+[![Android CI](https://github.com/Evangelioonnn/suishenting-android/actions/workflows/android-ci.yml/badge.svg?branch=main)](https://github.com/Evangelioonnn/suishenting-android/actions/workflows/android-ci.yml)
+
 用于讲解词阅读和逐句练习的 Android 应用，支持 Android 8.0（API26）及以上。
 
 **[下载 APK](https://github.com/Evangelioonnn/suishenting-android/releases/download/v0.9.12-rc.1/Suishenting-v0.9.12-rc.1.apk)** · [版本说明和校验文件](https://github.com/Evangelioonnn/suishenting-android/releases/tag/v0.9.12-rc.1) · [历史版本](https://github.com/Evangelioonnn/suishenting-android/releases)
@@ -24,6 +26,8 @@
 文稿默认本机保存；主动生成或试听云声音会将对应文字发送给选定的讯飞或百度。云密钥由Android Keystore本机加密保存，不进入备份。只在手机应用配置，不上传聊天或Issues。取消不能撤回提供商已处理的请求，本机计数不等于账单。
 
 ## 验证与构建
+
+[自动检查](docs/CI.md)会在main源码推送、Pull Request或手动运行时构建Debug/未签名Release，执行现有单元和两套lint，并保存检查报告。CI不自动发布APK，已有v0.9.12-rc.1及原四资产保持。
 
 最终固定包通过44单元、四API各134主回归（536次）、50专项、真实进程中断、两种实际覆盖升级、系统备份/空恢复和实际TalkBack；355张原图复核，双lint各0错误/10保留警告。最后源码/边界与实际流程/异常复查均无新确认必要缺陷；全部29个原失败样例和中间候选本机保留。未以模拟器代替真实声音、云服务或手机性能验收。
 

@@ -25,3 +25,4 @@ environment/
 signing.properties
 *.pem
 *.key
+ci-reports/
