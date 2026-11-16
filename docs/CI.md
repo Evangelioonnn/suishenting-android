@@ -6,6 +6,7 @@ GitHub Actions工作流为[Android CI](https://github.com/Evangelioonnn/suishent
 
 - 推送main、面向main的Pull Request及手动运行时触发。只修改Markdown或`.gitignore`不重复构建。同一分支或PR有新提交时取消过时运行。
 - 使用Ubuntu24.04、Temurin JDK25、项目原Gradle Wrapper及官方校验和，安装SDK36/BuildTools36.1.0。Action固定到已核对的官方commit；Gradle使用GitHub基础缓存，PR只读缓存。
+- POSIX启动脚本采用同版Gradle9.5.0官方文件，保留LF和可执行模式；Wrapper JAR、分发校验和及Windows脚本保持。首次Linux实测发现旧脚本把字面引号传给Java，原失败保留；参数及含空格路径保护已本地复验，完整云端检查重新执行中。
 - 构建Debug和未签名Release，执行`:app:testDebugUnitTest`、`:app:lintDebug`、`:app:lintRelease`。禁用任务输出缓存，现有单元测试实际执行。
 - [报告检查器](../tools/ci/verify_reports.py)要求至少44个单元测试、失败/错误/跳过均为0、两套lint为0错误。缺失/损坏报告和计数不一致均失败。警告会列出，不压制或新增lint baseline。
 - Actions摘要显示结果；日志、JUnit XML/HTML及lint报告保存为`android-ci-reports-运行ID-尝试号`，保留14天。构建失败也尽可能保存已有报告。
@@ -22,5 +23,7 @@ python tools/ci/verify_reports.py --minimum-tests 44 --output ci-reports/check-s
 ```
 
 CI不需要云服务密钥或本机签名，不自动创建Release，也不上传APK作为升级包。现有v0.9.12-rc.1及四个发布文件保留，应用版本/数据库/原签名不变；普通用户继续从[Release](https://github.com/Evangelioonnn/suishenting-android/releases/tag/v0.9.12-rc.1)下载原验收包。
+
+新增CI与POSIX启动修正在main；原Release源码ZIP保留发布时快照，不回写历史归档。Linux/macOS开发者使用main源码中的修正启动入口，APK用户的升级方式不变。
 
 这套CI覆盖构建、JVM单元和静态lint。四API instrumentation、实际手机、录音、耳机/来电、长时锁屏与真实云调用仍遵循[外部验收表](EXTERNAL_ACCEPTANCE_GUIDE.md)，不能以绿色CI替代正式验收。
