@@ -99,6 +99,8 @@ data class AppUiState(
     val routeContextId: String? = null,
     val versions: List<DocumentVersion> = emptyList(),
     val pendingImport: ImportedDocument? = null,
+    val importSaving: Boolean = false,
+    val importError: String? = null,
     val pendingBackup: PreparedBackup? = null,
     val backupWarnings: List<String> = emptyList(),
     val backupRecoveryPoint: String? = null,
@@ -109,6 +111,7 @@ data class AppUiState(
     val recording: RecordingUiState = RecordingUiState(),
     val storage: StorageOverview = StorageOverview(),
     val pendingRecordings: List<PendingRecording> = emptyList(),
+    val damagedRecordings: List<com.museum.reader.recording.DamagedRecording> = emptyList(),
     val isBusy: Boolean = true,
     val busyLabel: String = "正在整理文稿…",
     val message: String? = null,
@@ -147,6 +150,7 @@ class MuseumReaderViewModel(application: Application) : AndroidViewModel(applica
     private var voiceLoader: TextToSpeech? = null
     private var voicePreview: TextToSpeech? = null
     private var loadGeneration = 0L
+    private var importReadGeneration = 0L
     private var rangeBefore: Triple<LoopMode, Int, Int>? = null
     private var viewedVersion = ""
     private var cloudGenerationJob: Job? = null
@@ -190,26 +194,50 @@ class MuseumReaderViewModel(application: Application) : AndroidViewModel(applica
     }
 
     fun importFile(uri: Uri) {
+        if (mutableState.value.importSaving || mutableState.value.pendingImport != null)
+            return showMessage("请先完成或取消当前导入")
+        val request = ++importReadGeneration
         mutableState.value = mutableState.value.copy(isBusy = true, busyLabel = "正在读取并解析文件…")
         viewModelScope.launch(operationErrors) {
             runOperationCatching {
                 withContext(Dispatchers.IO) { DocumentImporter.import(getApplication<Application>().contentResolver, uri) }
             }.onSuccess { imported ->
-                mutableState.value = mutableState.value.copy(isBusy = false, pendingImport = imported)
+                if (request == importReadGeneration) mutableState.value = mutableState.value.copy(isBusy = false, pendingImport = imported, importError = null)
             }.onFailure { error ->
-                showFailure(UserOperation.IMPORT, error)
+                if (request == importReadGeneration) showFailure(UserOperation.IMPORT, error)
             }
         }
     }
 
-    fun confirmImport(title: String, text: String) {
-        val imported = mutableState.value.pendingImport ?: return
-        mutableState.value = mutableState.value.copy(pendingImport = null)
-        createDocument(title, text, imported.source)
+    fun editImport(title: String? = null, text: String? = null) {
+        val ui = mutableState.value
+        val current = ui.pendingImport ?: return
+        if (ui.importSaving) return
+        val edited = current.edited(title ?: current.title, text ?: current.text)
+        mutableState.value = ui.copy(pendingImport = edited, importError = null)
+    }
+
+    fun confirmImport() {
+        val ui = mutableState.value
+        val imported = ui.pendingImport ?: return
+        if (ui.importSaving) return
+        mutableState.value = ui.copy(importSaving = true, importError = null)
+        viewModelScope.launch(operationErrors) {
+            val document = try {
+                withContext(Dispatchers.IO) { repository.create(imported.title, imported.text, imported.source) }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                mutableState.value = mutableState.value.copy(importSaving = false, importError = operationMessage(error, UserOperation.CREATE))
+                return@launch
+            }
+            mutableState.value = mutableState.value.copy(importSaving = false, pendingImport = null, importError = null)
+            refreshDocuments()
+            openDocument(document.id)
+        }
     }
 
     fun cancelImport() {
-        mutableState.value = mutableState.value.copy(pendingImport = null)
+        if (!mutableState.value.importSaving) mutableState.value = mutableState.value.copy(pendingImport = null, importError = null)
     }
 
     fun openDocument(id: String) {
@@ -413,14 +441,29 @@ class MuseumReaderViewModel(application: Application) : AndroidViewModel(applica
         if (ui.currentDocument == null || ui.content.sentences.isEmpty()) return showMessage("请先打开一篇文稿")
         val index = if (PlaybackBus.snapshot.value.documentId == ui.currentDocument.id)
             PlaybackBus.snapshot.value.currentIndex else ui.viewedIndex
-        mutableState.value = ui.copy(page = AppPage.RECORDING, recording = ui.recording.copy(
-            currentIndex = index.coerceIn(0, ui.content.sentences.lastIndex)))
+        mutableState.value = ui.copy(page = AppPage.RECORDING, recording = RecordingUiState(
+            currentIndex = index.coerceIn(0, ui.content.sentences.lastIndex), processing = true))
         viewModelScope.launch(operationErrors) {
-            refreshRecordingState(index)
-            val pending = recordingManager.pendingRecordings().firstOrNull { it.documentId == ui.currentDocument.id }
-            if (mutableState.value.currentDocument?.id == ui.currentDocument.id)
-                mutableState.value = mutableState.value.copy(recording = mutableState.value.recording.copy(pending = pending))
+            try {
+                refreshAudioForDocument(ui.currentDocument.id)
+                val pending = recordingManager.inventory(ui.currentDocument.id).pending.firstOrNull()
+                val latest = mutableState.value
+                if (latest.page != AppPage.RECORDING || latest.currentDocument?.id != ui.currentDocument.id) return@launch
+                val actualIndex = pending?.let { take -> latest.content.sentences.indexOfFirst { it.id == take.sentenceId } }
+                    ?.takeIf { it >= 0 } ?: latest.recording.currentIndex
+                mutableState.value = latest.copy(recording = latest.recording.copy(currentIndex = actualIndex, pending = pending))
+            } finally {
+                if (mutableState.value.page == AppPage.RECORDING && mutableState.value.currentDocument?.id == ui.currentDocument.id)
+                    mutableState.value = mutableState.value.copy(recording = mutableState.value.recording.copy(processing = false))
+            }
         }
+    }
+
+    fun keepPendingAndReturn() {
+        val ui = mutableState.value
+        if (ui.recording.pending == null || ui.recording.processing || ui.recording.isRecording) return
+        stopPreviews()
+        mutableState.value = ui.copy(page = AppPage.READER, recording = RecordingUiState(), message = "录音已保留，可稍后处理")
     }
 
     fun closeRecording() {
@@ -606,8 +649,9 @@ class MuseumReaderViewModel(application: Application) : AndroidViewModel(applica
             try {
                 withContext(Dispatchers.IO) { storageMaintenance.recover() }
                 val overview = withContext(Dispatchers.IO) { storageMaintenance.overview() }
-                val pending = recordingManager.pendingRecordings()
-                mutableState.value = mutableState.value.copy(storage = overview, pendingRecordings = pending, isBusy = false)
+                val records = recordingManager.inventory()
+                mutableState.value = mutableState.value.copy(storage = overview, pendingRecordings = records.pending,
+                    damagedRecordings = records.damaged, isBusy = false)
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) { showFailure(UserOperation.STORAGE, error) }
         }
@@ -691,7 +735,22 @@ class MuseumReaderViewModel(application: Application) : AndroidViewModel(applica
     }
 
     fun previewStoredFile(path: String) { playPreviewFile(java.io.File(path)) }
+    fun isolateRecording(record: com.museum.reader.recording.DamagedRecording) {
+        if (mutableState.value.isBusy) return
+        mutableState.value = mutableState.value.copy(isBusy = true, busyLabel = "正在隔离异常记录…")
+        viewModelScope.launch(operationErrors) {
+            try {
+                recordingManager.isolate(record)
+                refreshStorage()
+                showMessage("异常记录已隔离，原音频仍在本机")
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) { showFailure(UserOperation.STORAGE, error) }
+        }
+    }
+
     fun processPendingFromStorage(pending: PendingRecording, save: Boolean) {
+        if (mutableState.value.isBusy) return
+        mutableState.value = mutableState.value.copy(isBusy = true, busyLabel = "正在处理待确认录音…")
         stopPreviews()
         viewModelScope.launch(operationErrors) {
             try {
@@ -1179,32 +1238,29 @@ class MuseumReaderViewModel(application: Application) : AndroidViewModel(applica
     }
 
     private suspend fun refreshAudioForDocument(documentId: String) {
-        val assets = withContext(Dispatchers.IO) { repository.audioAssets(documentId) }
+        val (assets, counts) = withContext(Dispatchers.IO) {
+            val audio = repository.audioAssets(documentId)
+            val recorded = hashSetOf<String>()
+            var recordingBytes = 0L
+            var cloudBytes = 0L
+            for (asset in audio) {
+                if (asset.archivedAt != null) continue
+                val bytes = java.io.File(asset.path).length()
+                if (bytes <= 0) continue
+                if (asset.kind == AudioKind.RECORDING) { recorded += asset.sentenceId; recordingBytes += bytes }
+                else cloudBytes += bytes
+            }
+            audio to Triple(recorded, recordingBytes, cloudBytes)
+        }
         if (mutableState.value.currentDocument?.id != documentId) return
         currentAudio = assets
-        val index = mutableState.value.recording.currentIndex
-        val recordings = assets.filter { it.kind == AudioKind.RECORDING && it.archivedAt == null && java.io.File(it.path).isFile }
-        val cloud = assets.filter { it.kind == AudioKind.CLOUD && it.archivedAt == null && java.io.File(it.path).isFile }
-        mutableState.value = mutableState.value.copy(
-            recording = mutableState.value.recording.copy(
-                currentIndex = index,
-                recordedSentenceIds = recordings.mapTo(hashSetOf()) { it.sentenceId },
-                recordingBytes = recordings.sumOf { java.io.File(it.path).length() },
-                cloudBytes = cloud.sumOf { java.io.File(it.path).length() },
-            ),
-        )
+        mutableState.value = mutableState.value.copy(recording = mutableState.value.recording.copy(
+            recordedSentenceIds = counts.first, recordingBytes = counts.second, cloudBytes = counts.third))
         if (PlaybackBus.snapshot.value.documentId == documentId) {
             PlaybackController.send(getApplication(), PlaybackCommand.Refresh(queueFor(
                 LoadedDocument(mutableState.value.currentDocument!!, mutableState.value.content, viewedVersion), assets)))
         }
     }
-
-    private suspend fun refreshRecordingState(index: Int) {
-        val documentId = mutableState.value.currentDocument?.id ?: return
-        refreshAudioForDocument(documentId)
-        mutableState.value = mutableState.value.copy(recording = mutableState.value.recording.copy(currentIndex = index))
-    }
-
 
     private suspend fun refreshDocuments() {
         val documents = withContext(Dispatchers.IO) { repository.summaries() }

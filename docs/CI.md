@@ -1,6 +1,6 @@
 # 自动构建与检查
 
-GitHub Actions工作流为[Android CI](https://github.com/Evangelioonnn/suishenting-android/actions/workflows/android-ci.yml)，配置在[android-ci.yml](../.github/workflows/android-ci.yml)。本轮[实际GitHub运行](https://github.com/Evangelioonnn/suishenting-android/actions/runs/43930402978)已通过，报告artifact已下载并逐份复核；测试源码提交为`a6e1718b317d474c8e044edec5a9d5df30fe56ff`。
+GitHub Actions工作流为[Android CI](https://github.com/Evangelioonnn/suishenting-android/actions/workflows/android-ci.yml)，配置在[android-ci.yml](../.github/workflows/android-ci.yml)。v0.9.12 的[实际GitHub运行](https://github.com/Evangelioonnn/suishenting-android/actions/runs/43930402978)已通过，报告artifact已下载并逐份复核；测试源码提交为`a6e1718b317d474c8e044edec5a9d5df30fe56ff`。
 
 ## 自动执行的范围
 
@@ -9,7 +9,7 @@ GitHub Actions工作流为[Android CI](https://github.com/Evangelioonnn/suishent
 - POSIX启动脚本采用同版Gradle9.5.0官方文件，保留LF和可执行模式；Wrapper JAR、分发校验和及Windows脚本保持。首次Linux实测发现旧脚本把字面引号传给Java，原失败保留；参数及含空格路径保护已本地复验，最终实际Linux完整检查通过。
 - CI显式加载[官方仓库配置](../tools/ci/official-repositories.gradle)，从Maven Central、Google及Gradle Plugin Portal解析原版本依赖，避免依赖本机缓存或第三方镜像。项目的依赖版本、默认仓库配置和本机可选缓存不变；完整解析日志保存到构建报告。
 - 构建Debug和未签名Release，执行`:app:testDebugUnitTest`、`:app:lintDebug`、`:app:lintRelease`。禁用任务输出缓存，现有单元测试实际执行。
-- [报告检查器](../tools/ci/verify_reports.py)要求至少44个单元测试、失败/错误/跳过均为0、两套lint为0错误。缺失/损坏报告和计数不一致均失败。警告会列出，不压制或新增lint baseline。
+- [报告检查器](../tools/ci/verify_reports.py)要求 v0.9.13 至少执行 45 个单元测试、失败/错误/跳过均为0、两套lint为0错误。缺失/损坏报告和计数不一致均失败。警告会列出，不压制或新增lint baseline。
 - Actions摘要显示结果；日志、JUnit XML/HTML及lint报告保存为`android-ci-reports-运行ID-尝试号`，保留14天。构建失败也尽可能保存已有报告。
 
 ## 如何查看与复验
@@ -20,12 +20,10 @@ GitHub Actions工作流为[Android CI](https://github.com/Evangelioonnn/suishent
 
 ```powershell
 .\gradlew.bat --no-daemon --no-parallel --no-build-cache --init-script tools/ci/official-repositories.gradle :app:assembleDebug :app:assembleRelease :app:testDebugUnitTest :app:lintDebug :app:lintRelease
-python tools/ci/verify_reports.py --minimum-tests 44 --output ci-reports/check-summary.json
+python tools/ci/verify_reports.py --minimum-tests 45 --output ci-reports/check-summary.json
 ```
 
-CI不需要云服务密钥或本机签名，不自动创建Release，也不上传APK作为升级包。现有v0.9.12-rc.1及四个发布文件保留，应用版本/数据库/原签名不变；普通用户继续从[Release](https://github.com/Evangelioonnn/suishenting-android/releases/tag/v0.9.12-rc.1)下载原验收包。
-
-新增CI与POSIX启动修正在main；原Release源码ZIP保留发布时快照，不回写历史归档。Linux/macOS开发者使用main源码中的修正启动入口，APK用户的升级方式不变。
+CI 仅上传检查报告。用户安装包由维护者单独发布，来源及 SHA-256 随版本提供。[v0.9.13-rc.1](https://github.com/Evangelioonnn/suishenting-android/releases/tag/v0.9.13-rc.1)
 
 这套CI覆盖构建、JVM单元和静态lint。四API instrumentation、实际手机、录音、耳机/来电、长时锁屏与真实云调用仍遵循[外部验收表](EXTERNAL_ACCEPTANCE_GUIDE.md)，不能以绿色CI替代正式验收。
 

@@ -141,6 +141,15 @@ interface ReaderDao {
     @Query("SELECT * FROM audio_assets WHERE documentId = :documentId")
     suspend fun audioAssets(documentId: String): List<AudioAssetEntity>
 
+    @Query("SELECT * FROM audio_assets WHERE id = :id")
+    suspend fun audioById(id: String): AudioAssetEntity?
+
+    @Query("SELECT DISTINCT path FROM audio_assets WHERE id != :id")
+    suspend fun otherAudioPaths(id: String): List<String>
+
+    @Query("SELECT s.ordinal AS ordinal, substr(s.text,1,160) AS excerpt, s.textHash AS textHash, (s.retiredAt IS NULL AND d.trashedAt IS NULL) AS active FROM sentences s JOIN documents d ON d.id=s.documentId WHERE s.id=:sentenceId AND s.documentId=:documentId")
+    suspend fun recordingSentence(documentId: String, sentenceId: String): RecordingSentenceInfo?
+
     @Query("SELECT * FROM audio_assets WHERE kind = :kind")
     suspend fun audioAssetsByKind(kind: String): List<AudioAssetEntity>
 
@@ -292,3 +301,5 @@ interface ReaderDao {
         putSentences(sentences)
     }
 }
+
+data class RecordingSentenceInfo(val ordinal: Int, val excerpt: String, val textHash: String, val active: Boolean)

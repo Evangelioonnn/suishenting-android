@@ -20,12 +20,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 
-/** Keep the entire form, including its actions, scrollable inside the area above the IME. */
+/** A compact window can scroll the whole form; long import previews can keep their actions in reach. */
 @Composable
 internal fun InputDialog(
     title: String,
     onDismiss: () -> Unit,
     scrollResetKey: Any? = null,
+    pinActions: Boolean = false,
     actions: @Composable () -> Unit,
     content: @Composable ColumnScope.() -> Unit,
 ) {
@@ -45,16 +46,50 @@ internal fun InputDialog(
                 color = MaterialTheme.colorScheme.surfaceContainerHigh,
                 tonalElevation = 6.dp,
             ) {
-                val scroll = rememberScrollState()
-                LaunchedEffect(scrollResetKey) { scroll.scrollTo(0) }
-                Column(Modifier.verticalScroll(scroll).padding(24.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                val form: @Composable ColumnScope.() -> Unit = {
                     Text(title, modifier = Modifier.semantics { heading() }, style = MaterialTheme.typography.headlineSmall)
                     content()
-                    FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End,
+                }
+                val buttons: @Composable (Modifier) -> Unit = { modifier ->
+                    FlowRow(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End,
                         verticalArrangement = Arrangement.spacedBy(4.dp)) { actions() }
                 }
+                if (pinActions) {
+                    PinnedDialogForm(scrollResetKey, form, buttons)
+                } else {
+                    val scroll = rememberScrollState()
+                    LaunchedEffect(scrollResetKey) { scroll.scrollTo(0) }
+                    Column(Modifier.verticalScroll(scroll).padding(24.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                        form()
+                        buttons(Modifier)
+                    }
+                }
             }
+        }
+    }
+}
+
+/** Keep the same input nodes when the keyboard changes the available window height. */
+@Composable
+internal fun PinnedDialogForm(
+    scrollResetKey: Any?,
+    form: @Composable ColumnScope.() -> Unit,
+    buttons: @Composable (Modifier) -> Unit,
+) {
+    val formScroll = rememberScrollState()
+    val windowScroll = rememberScrollState()
+    LaunchedEffect(scrollResetKey) {
+        formScroll.scrollTo(0)
+        windowScroll.scrollTo(0)
+    }
+    BoxWithConstraints {
+        val scrollWindow = maxHeight < 180.dp
+        Column(if (scrollWindow) Modifier.verticalScroll(windowScroll) else Modifier) {
+            val formModifier = if (scrollWindow) Modifier else Modifier.weight(1f, fill = false).verticalScroll(formScroll)
+            Column(formModifier.padding(start = 24.dp, top = 24.dp, end = 24.dp, bottom = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp), content = form)
+            buttons(Modifier.padding(horizontal = 24.dp, vertical = 8.dp))
         }
     }
 }

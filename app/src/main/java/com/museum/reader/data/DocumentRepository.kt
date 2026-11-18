@@ -219,7 +219,7 @@ class DocumentRepository(
         val retained = validatedLegacyTitle(draft.documentId, draft.title, legacyTitle, current)
             ?: dao.draft(draft.documentId)?.title?.takeIf { it.length > MAX_NAME_CHARACTERS && draft.title == namePreview(it) }
             ?: current.title.takeIf { it.length > MAX_NAME_CHARACTERS && draft.title == namePreview(it) }
-        dao.putDraft(draft.copy(title = retained ?: draft.title))
+        draft.copy(title = retained ?: draft.title).also { dao.putDraft(it) }
     }
 
     private suspend fun validatedLegacyTitle(id: String, preview: String, original: String?, current: DocumentEntity): String? {
@@ -231,6 +231,11 @@ class DocumentRepository(
         return original
     }
     suspend fun deleteDraft(id: String) = dao.deleteDraft(id)
+
+    suspend fun deleteDraftIfUnchanged(expected: com.museum.reader.data.db.EditorDraftEntity) = database.withTransaction {
+        val current = dao.draft(expected.documentId)
+        if (current == expected) { dao.deleteDraft(expected.documentId); null } else current
+    }
 
     suspend fun savePosition(id: String, sentence: Int) = dao.savePosition(id, sentence.coerceAtLeast(0))
 
@@ -393,6 +398,36 @@ class DocumentRepository(
         contentHashes[id]?.takeIf { it.first == meta.updatedAt }?.let { return it.second }
         val text = if (meta.text.isNotEmpty()) meta.text else dao.document(id)?.text ?: return null
         return textHash(text).also { contentHashes[id] = meta.updatedAt to it }
+    }
+
+    suspend fun recordingSentence(documentId: String, sentenceId: String) = dao.recordingSentence(documentId, sentenceId)
+
+    suspend fun recordingById(id: String) = dao.audioById(id)?.toModel()
+
+    // The receipt and the reference change share one commit. A crash before journal removal
+    // can therefore never turn a previously confirmed take back into a disposable file.
+    internal suspend fun confirmRecording(audio: SentenceAudio) = database.withTransaction {
+        check(!dao.hasRestoreReceipt("discard-take:" + audio.id)) { "该录音已放弃，请刷新录音列表" }
+        if (dao.hasRestoreReceipt("confirm-take:" + audio.id)) return@withTransaction
+        val existing = dao.audioById(audio.id)
+        require(existing == null || existing.documentId == audio.documentId && existing.sentenceId == audio.sentenceId &&
+            existing.textHash == audio.textHash && existing.kind == AudioKind.RECORDING.name &&
+            File(existing.path).canonicalFile == File(audio.path).canonicalFile) { "录音关联已变化，请刷新后处理" }
+        if (existing == null || existing.archivedAt != null)
+            require(putAudioIfCurrent(audio)) { "录音所属句子已修改或删除，原文件已保留" }
+        dao.putRestoreReceipt(com.museum.reader.data.db.RestoreReceiptEntity("confirm-take:" + audio.id, System.currentTimeMillis()))
+    }
+
+    internal suspend fun releasePendingRecording(audio: SentenceAudio): Boolean = database.withTransaction {
+        val old = dao.audioById(audio.id)
+        require(!dao.hasRestoreReceipt("confirm-take:" + audio.id) && (old == null ||
+            old.archivedAt != null && old.documentId == audio.documentId && old.sentenceId == audio.sentenceId &&
+            old.textHash == audio.textHash && old.kind == AudioKind.RECORDING.name &&
+            File(old.path).canonicalFile == File(audio.path).canonicalFile)) { "该录音已保存或关联变化，请刷新后处理" }
+        if (old != null) dao.deleteAudio(audio.id)
+        dao.putRestoreReceipt(com.museum.reader.data.db.RestoreReceiptEntity("discard-take:" + audio.id, System.currentTimeMillis()))
+        val raw = File(audio.path).canonicalFile
+        dao.otherAudioPaths(audio.id).none { File(it).canonicalFile == raw }
     }
 
     suspend fun archiveAudio(id: String) = dao.archiveAudio(id, System.currentTimeMillis())

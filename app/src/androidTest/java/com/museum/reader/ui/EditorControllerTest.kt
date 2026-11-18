@@ -140,6 +140,65 @@ class EditorControllerTest {
         } finally { scope.cancel(); db.close() }
     }
 
+    @Test fun revertingAnAutosavedDraftWaitsForCleanupAndProtectsNewerInput() = runBlocking<Unit> {
+        val db = Room.inMemoryDatabaseBuilder(context, ReaderDatabase::class.java).build()
+        val repo = DocumentRepository(context, db)
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+        try {
+            val doc = repo.create("正式文稿", "正式原文。", DocumentSource.TXT)
+            val editor = EditorController(repo, scope) {}
+            open(editor, doc.id)
+            suspend fun edit(text: String) = withContext(Dispatchers.Main) { editor.change(doc.title, text) }
+            suspend fun persist(text: String) {
+                edit(text)
+                withTimeout(5000) { editor.state.first { it.dirty && it.revision == it.persistedRevision } }
+            }
+            suspend fun leave() {
+                val left = CompletableDeferred<Unit>()
+                withContext(Dispatchers.Main) { editor.leaveClean { left.complete(Unit) } }
+                withTimeout(5000) { left.await() }
+            }
+            persist("已落盘的修改。")
+            assertEquals("已落盘的修改。", repo.draft(doc.id)?.text)
+            val sql = db.openHelper.writableDatabase
+            sql.execSQL("CREATE TRIGGER reject_revert BEFORE DELETE ON editor_drafts BEGIN SELECT RAISE(ABORT,'busy'); END")
+            edit(doc.text)
+            withTimeout(4000) { editor.state.first { it.error != null } }
+            assertEquals("已落盘的修改。", repo.draft(doc.id)?.text)
+            sql.execSQL("DROP TRIGGER reject_revert")
+            leave()
+            assertNull(repo.draft(doc.id))
+            open(editor, doc.id)
+            assertNull(editor.state.value.pendingDraft)
+            persist("再次修改。")
+            val external = checkNotNull(repo.draft(doc.id)).copy(text = "另一个编辑页的更新。")
+            repo.saveDraft(external)
+            edit(doc.text)
+            leave()
+            assertEquals(external, repo.draft(doc.id))
+            open(editor, doc.id)
+            assertEquals(external, editor.state.value.pendingDraft)
+            val newer = external.copy(text = "选择窗口打开后的更新。")
+            repo.saveDraft(newer)
+            withContext(Dispatchers.Main) { editor.chooseDraft(false) }
+            withTimeout(5000) { editor.state.first { it.pendingDraft == newer && !it.choosingDraft } }
+            assertEquals(newer, repo.draft(doc.id))
+            withContext(Dispatchers.Main) { editor.chooseDraft(true) }
+
+            val locked = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val writer = launch(Dispatchers.IO) { db.withTransaction { locked.complete(Unit); release.await() } }
+            locked.await()
+            try {
+                edit(doc.text)
+                edit("清理期间的最新输入。")
+            } finally { release.complete(Unit); writer.join() }
+            withTimeout(5000) { editor.state.first { it.dirty && it.revision == it.persistedRevision } }
+            assertEquals("清理期间的最新输入。", repo.draft(doc.id)?.text)
+            assertEquals(doc.text, repo.find(doc.id)?.text)
+        } finally { scope.cancel(); db.close() }
+    }
+
     @Test fun unreadableDatabaseShowsRecoveryGuidanceWithoutTechnicalDetails() = runBlocking<Unit> {
         val db = Room.inMemoryDatabaseBuilder(context, ReaderDatabase::class.java).build()
         val repo = DocumentRepository(context, db)

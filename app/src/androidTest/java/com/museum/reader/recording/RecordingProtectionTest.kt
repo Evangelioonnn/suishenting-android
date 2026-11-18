@@ -21,6 +21,7 @@ class RecordingProtectionTest {
         val db = Room.inMemoryDatabaseBuilder(context, ReaderDatabase::class.java).build()
         val repo = DocumentRepository(context, db)
         val dir = File(context.filesDir, "sentence-audio/test-" + UUID.randomUUID())
+        var journal: File? = null
         try {
             val doc = repo.create("重录保护", "保留首尾字。", DocumentSource.TXT)
             val sentence = repo.load(doc.id)!!.content.sentences.single()
@@ -31,6 +32,7 @@ class RecordingProtectionTest {
             val manager = SentenceRecordingManager(context, repo)
             val id = UUID.randomUUID().toString()
             val pending = PendingRecording(id, doc.id, sentence.id, DocumentRepository.textHash(sentence.text), take.path, 1000, true)
+            journal = writeTestJournal(context, pending)
             val before = AudioFiles.sha256(take)
             assertEquals("original", repo.latestAudio(sentence.id, AudioKind.RECORDING)!!.id)
             manager.save(pending)
@@ -39,7 +41,7 @@ class RecordingProtectionTest {
             assertTrue(old.isFile)
             assertNotNull(repo.audioAssets(doc.id).first { it.id == "original" }.archivedAt)
         } finally {
-            dir.listFiles().orEmpty().forEach { it.delete() }; dir.delete(); db.close()
+            journal?.delete(); dir.listFiles().orEmpty().forEach { it.delete() }; dir.delete(); db.close()
         }
     }
 

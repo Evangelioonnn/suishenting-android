@@ -55,6 +55,7 @@ class EditorController(
     private val writes = Mutex()
     private var opening = 0L
     private var install = 0L
+    private var ownedDraft: EditorDraftEntity? = null
     private fun owns(id: String, request: Long) = opening == request && mutableState.value.document?.id == id
     init {
         scope.launch {
@@ -72,12 +73,14 @@ class EditorController(
         scope.launch {
             try {
                 val loaded = withContext(Dispatchers.IO) { repository.find(id) } ?: error("没有找到这篇文稿")
-                val draft = withContext(Dispatchers.IO) { repository.draft(id) }
+                val draft = writes.withLock { withContext(Dispatchers.IO) { repository.draft(id) } }
                 val versions = withContext(Dispatchers.IO) { repository.versions(id) }
                 if (request != opening) return@launch
+                val pending = draft?.takeIf { it.title != (loaded.legacyTitle ?: loaded.title) || it.text != loaded.text }
+                ownedDraft = draft?.takeIf { pending == null }
                 mutableState.value = EditorUiState(document = loaded, title = loaded.title, text = loaded.text,
                     savedInputTitle = loaded.title, savedInputText = loaded.text, versions = versions, retainedTitle = loaded.legacyTitle,
-                    installRevision = ++install, pendingDraft = draft?.takeIf { it.title != (loaded.legacyTitle ?: loaded.title) || it.text != loaded.text })
+                    installRevision = ++install, pendingDraft = pending)
                 ready()
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) {
@@ -102,6 +105,7 @@ class EditorController(
         mutableState.value = current.copy(title = title, text = text, revision = current.revision + 1,
             dirty = title != current.savedInputTitle || text != current.savedInputText, error = null,
             retainedTitle = current.retainedTitle.takeIf { current.title == title })
+        if (current.dirty && !mutableState.value.dirty) flush()
     }
     fun position(start: Int, end: Int, scroll: Int) {
         val s = mutableState.value
@@ -114,6 +118,7 @@ class EditorController(
         val draft = s.pendingDraft ?: return
         if (s.saving || s.choosingDraft) return
         val request = opening
+        if (restore) ownedDraft = draft
         if (restore) mutableState.value = s.copy(title = namePreview(draft.title), text = draft.text,
             retainedTitle = draft.title.takeIf { it.length > MAX_NAME_CHARACTERS },
             selectionStart = draft.selectionStart.coerceIn(0, draft.text.length),
@@ -126,9 +131,10 @@ class EditorController(
                 try {
                     writes.withLock {
                         if (!owns(draft.documentId, request)) return@withLock
-                        withContext(Dispatchers.IO) { repository.deleteDraft(draft.documentId) }
+                        val remaining = withContext(Dispatchers.IO) { repository.deleteDraftIfUnchanged(draft) }
                         if (owns(draft.documentId, request)) mutableState.value = mutableState.value.copy(
-                            pendingDraft = null, choosingDraft = false, error = null)
+                            pendingDraft = remaining, choosingDraft = false,
+                            error = remaining?.let { "草稿已更新，请核对后重新选择" })
                     }
                 } catch (cancelled: CancellationException) { throw cancelled }
                 catch (_: Exception) {
@@ -140,14 +146,34 @@ class EditorController(
     }
 
     fun flush() { scope.launch { persistCurrent() } }
+    fun leaveClean(after: () -> Unit) {
+        val id = mutableState.value.document?.id ?: return after()
+        val request = opening
+        scope.launch {
+            persistCurrent()
+            if (owns(id, request) && !mutableState.value.dirty && !mutableState.value.saving && ownedDraft == null) after()
+        }
+    }
+
     private suspend fun persistCurrent() = writes.withLock {
         val s = mutableState.value
         val id = s.document?.id ?: return@withLock
         val request = opening
-        if (!s.dirty || s.pendingDraft != null || s.persistedRevision == s.revision) return@withLock
+        if (s.pendingDraft != null || s.choosingDraft || s.discarding) return@withLock
         try {
-            withContext(Dispatchers.IO) { repository.saveDraft(
+            if (!s.dirty) {
+                val previous = ownedDraft?.takeIf { it.documentId == id } ?: return@withLock
+                withContext(Dispatchers.IO) { repository.deleteDraftIfUnchanged(previous) }
+                if (owns(id, request) && ownedDraft === previous) {
+                    ownedDraft = null
+                    if (mutableState.value.revision == s.revision) mutableState.value = mutableState.value.copy(error = null)
+                }
+                return@withLock
+            }
+            if (s.persistedRevision == s.revision) return@withLock
+            val stored = withContext(Dispatchers.IO) { repository.saveDraft(
                 EditorDraftEntity(id, s.title, s.text, s.selectionStart, s.selectionEnd, System.currentTimeMillis()), s.retainedTitle) }
+            if (owns(id, request)) ownedDraft = stored
             val latest = mutableState.value
             if (owns(id, request) && latest.revision == s.revision)
                 mutableState.value = latest.copy(persistedRevision = s.revision, error = null)
@@ -183,12 +209,15 @@ class EditorController(
                     dirty = latest.title != submitted.title || latest.text != submitted.text, error = null)
                 writes.withLock {
                     if (!owns(id, request)) return@withLock
-                    if (mutableState.value.revision == submitted.revision)
-                        withContext(Dispatchers.IO) { repository.deleteDraft(id) }
-                    else {
+                    if (mutableState.value.revision == submitted.revision) {
+                        val previous = ownedDraft
+                        if (previous != null) withContext(Dispatchers.IO) { repository.deleteDraftIfUnchanged(previous) }
+                        if (owns(id, request)) ownedDraft = null
+                    } else {
                         val current = mutableState.value
-                        withContext(Dispatchers.IO) { repository.saveDraft(EditorDraftEntity(id, current.title,
+                        val stored = withContext(Dispatchers.IO) { repository.saveDraft(EditorDraftEntity(id, current.title,
                             current.text, current.selectionStart, current.selectionEnd, System.currentTimeMillis()), current.retainedTitle) }
+                        if (owns(id, request)) ownedDraft = stored
                         if (owns(id, request) && mutableState.value.revision == current.revision)
                             mutableState.value = mutableState.value.copy(persistedRevision = current.revision)
                     }
@@ -227,8 +256,10 @@ class EditorController(
                 var discarded = false
                 writes.withLock {
                     if (!owns(id, request)) return@withLock
-                    withContext(Dispatchers.IO) { repository.deleteDraft(id) }
+                    val previous = ownedDraft ?: mutableState.value.pendingDraft
+                    if (previous != null) withContext(Dispatchers.IO) { repository.deleteDraftIfUnchanged(previous) }
                     if (!owns(id, request)) return@withLock
+                    ownedDraft = null
                     mutableState.value = EditorUiState(installRevision = ++install)
                     discarded = true
                 }

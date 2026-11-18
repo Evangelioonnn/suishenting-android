@@ -10,4 +10,6 @@
         android:targetPackage="com.museum.reader" android:functionalTest="true" />
     <instrumentation android:name="com.museum.reader.acceptance.UpgradeVerifyRunner"
         android:targetPackage="com.museum.reader" android:functionalTest="true" />
+    <instrumentation android:name="com.museum.reader.acceptance.RecordingUpgradeRunner"
+        android:targetPackage="com.museum.reader" android:functionalTest="true" />
 </manifest>

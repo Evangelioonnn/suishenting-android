@@ -22,6 +22,7 @@ class RecordingIdentityRegressionTest {
     @Test fun confirmingAndRestoringRecordingSelectsOnlyOneTakeAcrossLegacyProviderLabels() = runBlocking<Unit> {
         val db = Room.inMemoryDatabaseBuilder(context, ReaderDatabase::class.java).build(); val repo = DocumentRepository(context, db)
         val dir = File(context.filesDir, "sentence-audio/recording-identity-${UUID.randomUUID()}").apply { mkdirs() }
+        var journal: File? = null
         try {
             val doc = repo.create("旧录音标签替换", "同一句必须播放已确认的新录音。", DocumentSource.TXT)
             val sentence = repo.load(doc.id)!!.content.sentences.single(); val hash = DocumentRepository.textHash(sentence.text)
@@ -31,6 +32,7 @@ class RecordingIdentityRegressionTest {
                 null, null, oldFile.path, hash, 1000)
             repo.putAudio(old)
             val pending = PendingRecording(UUID.randomUUID().toString(), doc.id, sentence.id, hash, newFile.path, 1000, true)
+            journal = writeTestJournal(context, pending)
             val saved = SentenceRecordingManager(context, repo).save(pending)
             var assets = repo.allAudioAssets()
             assertEquals("Only the confirmed take may remain current", listOf(saved.id), assets.filter { it.archivedAt == null }.map { it.id })
@@ -41,7 +43,7 @@ class RecordingIdentityRegressionTest {
             assertEquals(listOf(old.id), assets.filter { it.archivedAt == null }.map { it.id })
             assertNotNull(assets.single { it.id == saved.id }.archivedAt)
             assertEquals(oldHash, AudioFiles.sha256(oldFile)); assertEquals(newHash, AudioFiles.sha256(newFile))
-        } finally { dir.listFiles().orEmpty().forEach { it.delete() }; dir.delete(); db.close() }
+        } finally { journal?.delete(); dir.listFiles().orEmpty().forEach { it.delete() }; dir.delete(); db.close() }
     }
 
     @Test fun automaticLegacyFileRecoveryCannotPromoteAnOldTakeBesideAnExistingConfirmedRecording() = runBlocking<Unit> {

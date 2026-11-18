@@ -54,8 +54,9 @@ class BackupManager(
     }
 
     private suspend fun writePackage(target: File, settings: ReaderSettings): BackupExportResult {
-        require(File(context.filesDir, "recording-pending").listFiles().orEmpty().none { it.extension == "json" }) {
-            "有待确认录音，请先在录音或存储维护中保存、放弃后再备份，避免漏掉本次录音"
+        val journals = com.museum.reader.recording.RecordingJournals(context)
+        require(journals.active().isEmpty()) {
+            "有待确认录音，请在存储维护中处理后再备份。正常录音可保存或放弃，异常记录可另存原件并隔离。"
         }
         val snapshot = repository.exportPackageData(settings)
         val root = snapshot.manifest.put("packageVersion", 3)
@@ -63,7 +64,9 @@ class BackupManager(
         root.put("cloudPreferences", cloud.toBackupJson())
         val descriptors = JSONArray()
         val sources = LinkedHashMap<String, File>()
-        val warnings = ArrayList<String>()
+        val isolated = journals.isolated().map { journals.id(it).take(80) }
+        if (isolated.isNotEmpty()) root.put("excludedRecordingRecords", JSONArray(isolated))
+        val warnings = ArrayList(excludedRecordingWarnings(root))
         var total = 0L
         for (asset in snapshot.audio) {
             val file = AudioFiles.requireOwned(context, File(asset.path))
@@ -171,7 +174,7 @@ class BackupManager(
             require(graph.root.optInt("packageVersion", 1) in 1..3) { "备份包版本过新，请升级应用" }
             val sentences = graph.documents.flatMap { it.sentences }.associateBy { it.id }
             val titles = graph.documents.associate { it.document.id to it.document.title }
-            val warnings = ArrayList<String>()
+            val warnings = ArrayList(excludedRecordingWarnings(graph.root))
             val audio = ArrayList<SentenceAudio>()
             val ids = HashSet<String>()
             val usedEntries = HashSet<String>()
@@ -365,6 +368,15 @@ class BackupManager(
     private fun removeStaging(directory: File) {
         val target = requireStaging(directory)
         if (target.exists()) check(target.deleteRecursively()) { "无法清理恢复暂存，资料已保留" }
+    }
+
+    private fun excludedRecordingWarnings(root: JSONObject): List<String> {
+        val excluded = root.optJSONArray("excludedRecordingRecords") ?: return emptyList()
+        require(excluded.length() <= MAX_ENTRIES) { "备份异常录音记录数量超限" }
+        return (0 until excluded.length()).map {
+            val label = excluded.getString(it).take(80).filter { c -> c.isLetterOrDigit() || c == '-' || c == '_' }
+            "已隔离的待确认记录 ${label.ifBlank { (it + 1).toString() }} 未纳入；已关联音频照常备份，未关联原件请单独另存。"
+        }
     }
 
     private fun readLimited(input: InputStream, limit: Int): ByteArray {

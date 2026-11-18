@@ -19,7 +19,7 @@ internal fun RecordingScreen(
     onClearRecordings: () -> Unit, onClearCloud: () -> Unit,
     onSavePending: () -> Unit, onDiscardPending: () -> Unit, onPreviewPending: () -> Unit,
     onConfirmExit: (Boolean) -> Unit, onCancelExit: () -> Unit,
-    onPermissions: () -> Unit,
+    onPermissions: () -> Unit, onKeepPending: () -> Unit,
     snackbar: SnackbarHostState,
 ) {
     val r = ui.recording
@@ -39,9 +39,10 @@ internal fun RecordingScreen(
                 OutlinedButton(onClick = onPermissions, modifier = Modifier.fillMaxWidth()) { Text("打开应用权限设置") }
             }
             item { Text("保留完整原录音，不固定裁去首尾。重录先试听并确认，原有效录音在确认前保持可用。") }
-            item { Text("第 ${r.currentIndex + 1}/${ui.content.sentences.size} 句 · 已录 ${r.recordedSentenceIds.size} 句",
+            item { Text(if (r.pending != null) "${r.pending.sentenceLabel} · 已录 ${r.recordedSentenceIds.size} 句"
+                else "第 ${r.currentIndex + 1}/${ui.content.sentences.size} 句 · 已录 ${r.recordedSentenceIds.size} 句",
                 style = MaterialTheme.typography.titleMedium) }
-            item { Text(sentence?.text.orEmpty(), style = MaterialTheme.typography.headlineSmall) }
+            item { Text(r.pending?.let { it.excerpt.ifBlank { "原句文字暂不可用" } } ?: sentence?.text.orEmpty(), style = MaterialTheme.typography.headlineSmall) }
             if (r.processing) item {
                 LinearProgressIndicator(Modifier.fillMaxWidth())
                 Text("正在校验并整理录音，请稍候…")
@@ -56,12 +57,17 @@ internal fun RecordingScreen(
                 OutlinedCard(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("待确认录音", style = MaterialTheme.typography.titleLarge)
-                        Text(if (pending.playable) "已保留完整原文件 · ${pending.durationMs / 1000f} 秒"
-                            else "这份录音暂不可播放，原有效录音保持不变。可保留待处理，或放弃本次文件。")
+                        Text(when {
+                            !pending.playable -> "这份录音暂不可播放。可保留原件，到存储维护中另存。"
+                            !pending.sentenceAvailable -> "原句已变化。可试听、保留或在存储维护中另存原件。"
+                            pending.durationMs < 300 -> "录音不足 0.3 秒。可保留原件，或放弃后重新录制。"
+                            else -> "已保留完整原文件 · ${pending.durationMs / 1000f} 秒"
+                        })
                         OutlinedButton(onClick = onPreviewPending, enabled = pending.playable && !r.processing,
                             modifier = Modifier.fillMaxWidth()) { Text("试听本次录音") }
-                        Button(onClick = onSavePending, enabled = pending.playable && !r.processing,
+                        Button(onClick = onSavePending, enabled = pending.canSave && !r.processing,
                             modifier = Modifier.fillMaxWidth()) { Text("确认保存为本人录音") }
+                        TextButton(onClick = onKeepPending, enabled = !r.processing) { Text("保留并返回") }
                         TextButton(onClick = onDiscardPending, enabled = !r.processing) { Text("放弃本次录音") }
                     }
                 }
@@ -113,9 +119,10 @@ internal fun RecordingScreen(
         dismissButton = { TextButton(onClick = { clear = null }) { Text("取消") } }) }
     if (r.exitConfirm) AlertDialog(onDismissRequest = onCancelExit, title = { Text("离开录音前保留本次内容？") },
         text = { Text("保存会先校验本次录音，成功后才替换有效录音；放弃只移除本次文件。") },
-        confirmButton = { TextButton(onClick = { onConfirmExit(true) }) { Text("保存并返回") } },
+        confirmButton = { TextButton(onClick = { onConfirmExit(true) }, enabled = r.isRecording || r.pending?.canSave == true) { Text("保存并返回") } },
         dismissButton = { Column {
             TextButton(onClick = { onConfirmExit(false) }) { Text("放弃并返回") }
-            TextButton(onClick = onCancelExit) { Text("继续录音") }
+            if (r.pending != null) TextButton(onClick = onKeepPending) { Text("保留并返回") }
+            TextButton(onClick = onCancelExit) { Text(if (r.isRecording) "继续录音" else "继续查看") }
         } })
 }

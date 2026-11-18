@@ -101,7 +101,7 @@ def markdown(result: dict) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", type=Path, default=Path("."))
-    parser.add_argument("--minimum-tests", type=int, default=44)
+    parser.add_argument("--minimum-tests", type=int, default=45)
     parser.add_argument("--output", type=Path, default=Path("ci-reports/check-summary.json"))
     args = parser.parse_args()
     if args.minimum_tests < 1:

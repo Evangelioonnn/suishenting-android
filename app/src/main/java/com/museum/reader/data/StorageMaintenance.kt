@@ -145,7 +145,8 @@ class StorageMaintenance(
             audio.distinctBy { ownedPath(it.path) }.sumOf { ownedPath(it.path)?.let(::File)?.takeIf { file -> file.isFile }?.length() ?: 0 } == expected.bytes) {
             "恢复区内容或音频已变化，请刷新后重新确认"
         }
-        require(audio.none { ownedPath(it.path) in pendingPaths() || ownedPath(it.path) in inUsePaths() }) {
+        val protected = pendingPaths() + inUsePaths()
+        require(audio.none { ownedPath(it.path) in protected }) {
             "文稿仍有待确认录音或正在使用的音频，请先处理"
         }
         return perform(audio, emptyList(), expected)
@@ -154,7 +155,7 @@ class StorageMaintenance(
     private suspend fun perform(audio: List<SentenceAudio>, extra: List<File>, purge: TrashedDocumentInfo?, cloudOnly: Boolean = false): CleanupResult {
         val files = (audio.map { AudioFiles.requireOwned(context, File(it.path)) } + extra)
             .distinctBy { it.path }
-        require(files.none { it.path in inUsePaths() || it.path in pendingPaths() }) { "音频仍在使用，请停止播放后重试" }
+        requireAvailable(files)
         val id = UUID.randomUUID().toString()
         val journal = File(journals, "$id.json")
         val record = JSONObject().put("id", id).put("files", JSONArray(files.map { it.path }))
@@ -165,7 +166,7 @@ class StorageMaintenance(
             database.withTransaction {
                 val actual = repository.allAudioAssets().associateBy { it.id }
                 require(audio.all { actual[it.id] == it }) { "音频已变化，请刷新后重新确认" }
-                require(files.none { it.path in inUsePaths() || it.path in pendingPaths() }) { "音频仍在使用，请停止播放后重试" }
+                requireAvailable(files)
                 require(extra.none { file -> actual.values.any { ownedPath(it.path) == file.path } ||
                     extraVersions[file.path] != (file.length() to file.lastModified()) }) { "待确认文件已变化，请刷新后重新确认" }
                 if (purge == null && audio.isNotEmpty()) {
@@ -229,10 +230,13 @@ class StorageMaintenance(
         val session = PlaybackBus.snapshot.value
         return if (session.isPlaying) session.audioCandidates.values.flatten().mapNotNull { ownedPath(it.path) }.toSet() else emptySet()
     }
-    private fun pendingPaths(): Set<String> = File(context.filesDir, "recording-pending").listFiles().orEmpty()
-        .filter { it.isFile && it.extension == "json" }.mapNotNull {
-            runCatching { ownedPath(JSONObject(it.readText()).getString("path")) }.getOrNull()
-        }.toSet()
+    private suspend fun requireAvailable(files: List<File>) {
+        val protected = pendingPaths() + inUsePaths()
+        require(files.none { it.path in protected }) { "音频仍在使用，请停止播放后重试" }
+    }
+    private suspend fun pendingPaths() = com.museum.reader.recording.RecordingJournals(context).protectedPaths { id ->
+        repository.recordingById(id)?.takeIf { it.kind == AudioKind.RECORDING }?.path?.let(::ownedPath)
+    }
     private fun ownedFiles(): List<File> {
         val root = File(context.filesDir, "sentence-audio")
         if (!root.isDirectory) return emptyList()

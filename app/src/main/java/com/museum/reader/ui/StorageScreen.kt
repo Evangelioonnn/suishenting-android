@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.dp
 import com.museum.reader.data.*
 import com.museum.reader.model.AudioKind
 import com.museum.reader.recording.PendingRecording
+import com.museum.reader.recording.DamagedRecording
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -29,9 +30,11 @@ internal fun StorageScreen(
     onRestoreAudio: (String) -> Unit, onPreview: (String) -> Unit, onRecovery: (String) -> Unit,
     onExportAudio: (String) -> Unit,
     onPending: (PendingRecording, Boolean) -> Unit, snackbar: SnackbarHostState,
+    onIsolate: (DamagedRecording) -> Unit,
 ) {
     val storage = ui.storage
     var action by remember { mutableStateOf<StorageAction?>(null) }
+    var isolate by remember { mutableStateOf<DamagedRecording?>(null) }
     var discardPending by remember { mutableStateOf<PendingRecording?>(null) }
     val cloud = storage.items.filter { it.audio.kind == AudioKind.CLOUD && !it.protected }
     Scaffold(snackbarHost = { SnackbarHost(snackbar) }, topBar = {
@@ -56,10 +59,25 @@ internal fun StorageScreen(
                 OutlinedCard(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(12.dp)) {
                         Text(ui.documents.firstOrNull { it.id == pending.documentId }?.title ?: "已删除或不可用文稿")
+                        Text(pending.sentenceLabel + if (pending.excerpt.isBlank()) "" else " · " + pending.excerpt, maxLines = 3)
                         Text(if (pending.playable) "保留的原录音 · ${pending.durationMs / 1000f} 秒" else "原文件保留，但暂不可播放")
                         TextButton(onClick = { onPreview(pending.path) }, enabled = pending.playable) { Text("试听本次录音") }
-                        TextButton(onClick = { onPending(pending, true) }, enabled = pending.playable) { Text("确认保存为本人录音") }
+                        TextButton(onClick = { onExportAudio(pending.path) }) { Text("另存本次原音频") }
+                        TextButton(onClick = { onPending(pending, true) }, enabled = pending.canSave) { Text("确认保存为本人录音") }
                         TextButton(onClick = { discardPending = pending }) { Text("放弃本次录音") }
+                    }
+                }
+            }
+            items(ui.damagedRecordings, key = { "damaged-" + it.name }) { record ->
+                OutlinedCard(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(if (record.isolated) "已隔离的录音记录" else "待处理的异常录音记录", style = MaterialTheme.typography.titleMedium)
+                        Text("记录 " + record.name.substringBefore(".json").take(80))
+                        if (record.originals.isEmpty()) Text("未能定位原音频。可在下方无引用文件中核对。")
+                        record.originals.forEach { path ->
+                            TextButton(onClick = { onExportAudio(path) }) { Text("另存原音频 · " + java.io.File(path).name) }
+                        }
+                        if (!record.isolated) OutlinedButton(onClick = { isolate = record }) { Text("隔离异常记录") }
                     }
                 }
             }
@@ -134,6 +152,12 @@ internal fun StorageScreen(
             } }, confirmButton = {
                 TextButton(onClick = { onAction(pending); action = null }, enabled = acknowledged) { Text("永久清理") }
             }, dismissButton = { TextButton(onClick = { action = null }) { Text("取消") } })
+    }
+    isolate?.let { record ->
+        AlertDialog(onDismissRequest = { isolate = null }, title = { Text("隔离这条异常记录？") },
+            text = { Text("原记录和音频会保留。备份将列出这项遗漏，未关联的原音频可单独另存。") },
+            confirmButton = { TextButton(onClick = { isolate = null; onIsolate(record) }) { Text("确认隔离") } },
+            dismissButton = { TextButton(onClick = { isolate = null }) { Text("取消") } })
     }
     discardPending?.let { pending ->
         AlertDialog(onDismissRequest = { discardPending = null }, title = { Text("放弃本次待确认录音？") },

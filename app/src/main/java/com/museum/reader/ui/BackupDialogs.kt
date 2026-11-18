@@ -108,7 +108,7 @@ internal fun BackupResultDialog(warnings: List<String>, hasRecoveryPoint: Boolea
             Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 if (hasRecoveryPoint) Text("覆盖前的资料已保存为本机恢复点，可在设置的存储维护中查看和恢复。")
-                if (warnings.isNotEmpty()) Text(if (isExport) "备份已保存，以下原始音频已保留，但使用时需要注意：" else "恢复时有以下内容需要注意，请逐项核对：")
+                if (warnings.isNotEmpty()) Text(if (isExport) "备份已保存，请核对以下音频及未纳入的资料：" else "恢复时有以下内容需要注意，请逐项核对：")
                 warnings.forEach { Text(it) }
             }
         },

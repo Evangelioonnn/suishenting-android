@@ -20,7 +20,10 @@ data class ImportedDocument(
     val title: String,
     val text: String,
     val source: DocumentSource,
-)
+    val counts: Pair<Int, Int>? = null,
+) {
+    fun edited(title: String, text: String) = copy(title = title, text = text, counts = counts.takeIf { this.text == text })
+}
 
 object DocumentImporter {
     private const val MAX_IMPORT_BYTES = 20L * 1024L * 1024L
@@ -62,11 +65,14 @@ object DocumentImporter {
             }
         }
         if (text.isBlank()) error("文件中没有可朗读的文字")
-        if (text.length > MAX_TEXT_CHARACTERS || com.museum.reader.domain.TextSegmenter.segment(text).normalizedText.length > MAX_TEXT_CHARACTERS) error("文稿超过 100 万字，请拆分后导入")
+        if (text.length > MAX_TEXT_CHARACTERS) error("文稿超过 100 万字，请拆分后导入")
+        val segmented = com.museum.reader.domain.TextSegmenter.segment(text)
+        if (segmented.normalizedText.length > MAX_TEXT_CHARACTERS) error("文稿超过 100 万字，请拆分后导入")
         return ImportedDocument(
             title = fileName.substringBeforeLast('.').trim().ifBlank { "导入的讲解词" },
             text = text,
             source = source,
+            counts = segmented.paragraphs.size to segmented.sentences.size,
         )
     }
 

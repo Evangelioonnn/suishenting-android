@@ -83,7 +83,7 @@ jobs:
 
       - name: Verify test and lint reports
         if: ${{ always() && steps.build.outcome != 'skipped' }}
-        run: python3 tools/ci/verify_reports.py --minimum-tests 44 --output ci-reports/check-summary.json
+        run: python3 tools/ci/verify_reports.py --minimum-tests 45 --output ci-reports/check-summary.json
 
       - name: Save check reports
         if: ${{ always() && steps.checkout.outcome == 'success' }}

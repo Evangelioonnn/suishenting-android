@@ -1,5 +1,7 @@
 package com.museum.reader.cloud
 
+class CloudOutputException(cause: Throwable) : IllegalStateException("云声音已返回，但本机未能保存，请检查手机存储后重试", cause)
+
 enum class CloudFailureKind { AUTHENTICATION, QUOTA, SERVICE }
 
 /** Public guidance is built from known categories and numeric codes, never response bodies or URLs. */

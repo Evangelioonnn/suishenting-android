@@ -24,20 +24,19 @@ internal class LegacyAudioRecovery(
             else listOf(sentenceId, kind.name, provider.orEmpty(), voice.orEmpty())).joinToString("\u0000")
         val activeKeys = assets.filter { it.archivedAt == null && File(it.path).isFile }
             .mapTo(hashSetOf()) { key(it.sentenceId, it.kind, it.provider, it.voiceId) }
-        val pendingJournals = File(context.filesDir, "recording-pending").listFiles().orEmpty()
-            .filter { it.isFile && it.extension == "json" }
-        val pendingIds = pendingJournals.map { it.nameWithoutExtension }
-        val pendingPaths = pendingJournals.mapNotNull { journal -> runCatching {
-            AudioFiles.requireOwned(context, File(org.json.JSONObject(journal.readText()).getString("path"))).path
-        }.getOrNull() }.toSet()
+        val journals = com.museum.reader.recording.RecordingJournals(context)
+        val records = journals.records()
+        val pendingIds = records.mapTo(hashSetOf(), journals::id)
+        val pendingPaths = journals.protectedPaths(records)
         val unmatched = ArrayList<File>()
         var recovered = 0
         for (kindDirectory in listOf("recordings", "cloud")) {
             val directory = AudioFiles.requireOwned(context, File(context.filesDir, "sentence-audio/" + kindDirectory + "/" + documentId))
             for (file in directory.listFiles().orEmpty().filter { it.isFile && !it.name.startsWith(".") }.sortedByDescending { it.lastModified() }) {
-                if (file.canonicalPath in referenced || file.canonicalPath in pendingPaths ||
-                    pendingIds.any { file.nameWithoutExtension.endsWith("-" + it) }) continue
                 val name = file.nameWithoutExtension
+                val captureSuffix = name.takeLast(37)
+                if (file.canonicalPath in referenced || file.canonicalPath in pendingPaths ||
+                    (captureSuffix.startsWith("-") && captureSuffix.drop(1) in pendingIds)) continue
                 val sentence = known[name.take(36)]?.takeIf { name.startsWith(it.id + "-") }
                 if (sentence == null) { unmatched += file; continue }
                 val tail = name.removePrefix(sentence.id + "-")

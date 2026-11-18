@@ -2,6 +2,11 @@ package com.museum.reader.ui
 
 import android.os.SystemClock
 import android.view.accessibility.AccessibilityNodeInfo
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.hasScrollToIndexAction
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.lifecycle.ViewModelProvider
 import androidx.test.platform.app.InstrumentationRegistry
@@ -28,10 +33,13 @@ class BusyAccessibilityTest {
         compose.runOnIdle { vm = ViewModelProvider(compose.activity)[MuseumReaderViewModel::class.java] }
         compose.waitUntil(10000) { !vm.state.value.isBusy }
         compose.runOnIdle { vm.openSettings() }
-        compose.waitForIdle()
-        compose.waitUntil(8000) { labels(instrumentation.uiAutomation.rootInActiveWindow).any { it.contains("导出完整备份") } }
-        val before = labels(instrumentation.uiAutomation.rootInActiveWindow)
-        assertTrue(before.any { it.contains("导出完整备份") })
+        compose.onNode(hasScrollToIndexAction()).performScrollToNode(hasText("导出完整备份"))
+        compose.onNodeWithText("导出完整备份").assertIsDisplayed()
+        var before = emptyList<String>()
+        compose.waitUntil(8000) {
+            before = labels(instrumentation.uiAutomation.rootInActiveWindow)
+            before.any { it.contains("导出完整备份") }
+        }
         val sql = ReaderDatabase.get(context).openHelper.writableDatabase
         val syntheticText = "忙碌操作无障碍样本${java.util.UUID.randomUUID()}。"
         sql.beginTransaction()

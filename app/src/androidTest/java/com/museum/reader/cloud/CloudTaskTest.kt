@@ -60,6 +60,42 @@ class CloudTaskTest {
         }
     }
 
+    @Test fun successfulResponseFollowedByFileOrDatabaseFailureNeverCallsBackup() = runBlocking<Unit> {
+        fixture { repo, prefs, doc, sentence, bytes ->
+            val calls = mutableListOf<CloudProvider>()
+            val manager = CloudSpeechManager(context, repo, SecureCredentialStore(context), prefs) { kind, _ ->
+                provider(kind) { calls += kind; SynthesizedAudio(bytes, "wav") }
+            }
+            val directory = File(context.filesDir, "sentence-audio/cloud/${doc.id}")
+            directory.parentFile!!.mkdirs()
+            assertTrue(directory.createNewFile())
+            try {
+                val result = runCatching { manager.synthesizeSentence(doc.id, sentence, doc.text) }
+                assertTrue("Expected a local output failure: $result", result.exceptionOrNull() is CloudOutputException)
+                assertEquals(listOf(CloudProvider.XUNFEI), calls)
+                assertTrue(repo.allAudioAssets().isEmpty())
+            } finally { directory.delete() }
+            // A failed SQL insert after file creation exercises the other local failure boundary.
+            val db = Room.inMemoryDatabaseBuilder(context, ReaderDatabase::class.java).build()
+            val secondRepo = DocumentRepository(context, db)
+            val secondDoc = secondRepo.create("本地入库", "模拟服务返回后。", DocumentSource.TXT)
+            val secondSentence = secondRepo.load(secondDoc.id)!!.content.sentences.single()
+            val output = File(context.filesDir, "sentence-audio/cloud/${secondDoc.id}")
+            try {
+                db.openHelper.writableDatabase.execSQL("CREATE TRIGGER reject_cloud BEFORE INSERT ON audio_assets BEGIN SELECT RAISE(ABORT,'local write'); END")
+                val second = CloudSpeechManager(context, secondRepo, SecureCredentialStore(context), prefs) { kind, _ ->
+                    provider(kind) { calls += kind; SynthesizedAudio(bytes, "wav") }
+                }
+                val result = runCatching { second.synthesizeSentence(secondDoc.id, secondSentence.id, secondDoc.text) }
+                assertTrue(result.exceptionOrNull() is CloudOutputException)
+                assertEquals(listOf(CloudProvider.XUNFEI, CloudProvider.XUNFEI), calls)
+                assertTrue(secondRepo.allAudioAssets().isEmpty())
+            } finally {
+                output.listFiles().orEmpty().forEach { it.delete() }; output.delete(); db.close()
+            }
+        }
+    }
+
     @Test fun cancellingInFlightRequestCannotStartBackupProvider() = runBlocking {
         fixture { repo, prefs, doc, sentence, _ ->
             val entered = CompletableDeferred<Unit>()

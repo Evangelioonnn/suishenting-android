@@ -123,7 +123,7 @@ internal fun EditorScreen(controller: EditorController, onBack: () -> Unit, snac
         lifecycle.lifecycle.addObserver(observer)
         onDispose { lifecycle.lifecycle.removeObserver(observer); controller.flush(); native = null }
     }
-    val requestBack = { if (editor.dirty) discardOpen = true else onBack() }
+    val requestBack = { if (editor.dirty) discardOpen = true else controller.leaveClean(onBack) }
     BackHandler(onBack = requestBack)
 
     val index by produceState<TextPositionIndex?>(null, editor.text) {
@@ -195,7 +195,7 @@ internal fun EditorScreen(controller: EditorController, onBack: () -> Unit, snac
         Column(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).imePadding().padding(horizontal = 12.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)) {
             if (!compact) OutlinedTextField(value = editor.title,
-                onValueChange = { controller.change(it, editor.text) }, label = { Text("文稿名称") },
+                onValueChange = { controller.change(it, controller.state.value.text) }, label = { Text("文稿名称") },
                 singleLine = true, modifier = Modifier.fillMaxWidth())
             if (editor.error != null) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("操作未完成", Modifier.weight(1f), style = MaterialTheme.typography.bodySmall,
@@ -278,7 +278,7 @@ internal fun EditorScreen(controller: EditorController, onBack: () -> Unit, snac
             modifier = Modifier.heightIn(min = 48.dp)) { Text("完成") }
     }) {
             if (editor.retainedTitle != null) Text("原名称过长，当前仅显示前部；未改名称时保留完整原值。输入新名称后，仍需保存正式文稿。")
-            OutlinedTextField(value = editor.title, onValueChange = { controller.change(it, editor.text) },
+            OutlinedTextField(value = editor.title, onValueChange = { controller.change(it, controller.state.value.text) },
                 label = { Text("文稿名称") }, modifier = Modifier.fillMaxWidth())
             Text("${editor.text.length} 字 · ${editor.draftStatus}")
     }

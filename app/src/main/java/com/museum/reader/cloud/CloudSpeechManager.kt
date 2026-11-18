@@ -71,27 +71,34 @@ class CloudSpeechManager(
                 }
                 // A local limit is checked before every provider attempt; it is not the provider bill.
                 ensureWithinLimit(text.length, preferences.dailyCharacterLimit)
-                try {
-                    val synthesized = engine.synthesize(text, preferences.voiceFor(provider))
-                    currentCoroutineContext().ensureActive()
-                    preferenceRepository.addUsage(text.length)
-                    val file = writeAudio(documentId, sentenceId, provider, preferences.voiceFor(provider), text, synthesized)
-                    val info = AudioFiles.inspect(file) ?: error("服务返回的音频不可播放，请检查音色配置")
-                    currentCoroutineContext().ensureActive()
-                    val audio = SentenceAudio(UUID.randomUUID().toString(), documentId, sentenceId, AudioKind.CLOUD,
-                        provider.name, preferences.voiceFor(provider), file.absolutePath, hash, info.durationMs)
-                    if (!repository.putAudioIfCurrent(audio, expectedContentVersion)) {
-                        // Keep completed output as archived evidence, never current output for changed text.
-                        repository.putAudio(audio.copy(archivedAt = System.currentTimeMillis()))
-                        error("正文已变化，已完成的旧声音保留为旧音频，请重新生成")
-                    }
-                    return@withLock CloudGenerationResult(audio, provider, false)
+                val synthesized = try {
+                    engine.synthesize(text, preferences.voiceFor(provider))
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (error: Exception) {
                     errors += "${provider.label}：${error.message ?: "请求失败"}"
                     failures += CloudProviderFailure(provider, error)
+                    continue
                 }
+                currentCoroutineContext().ensureActive()
+                val audio = try {
+                    preferenceRepository.addUsage(text.length)
+                    val file = writeAudio(documentId, sentenceId, provider, preferences.voiceFor(provider), text, synthesized)
+                    val info = AudioFiles.inspect(file) ?: throw IllegalArgumentException("音频无法解码，请检查服务音色配置")
+                    SentenceAudio(UUID.randomUUID().toString(), documentId, sentenceId, AudioKind.CLOUD,
+                        provider.name, preferences.voiceFor(provider), file.absolutePath, hash, info.durationMs)
+                } catch (error: java.io.IOException) {
+                    throw CloudOutputException(error)
+                }
+                currentCoroutineContext().ensureActive()
+                val installed = try {
+                    repository.putAudioIfCurrent(audio, expectedContentVersion).also { current ->
+                        if (!current) repository.putAudio(audio.copy(archivedAt = System.currentTimeMillis()))
+                    }
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (error: Exception) { throw CloudOutputException(error) }
+                check(installed) { "正文已变化，已完成的旧声音保留为旧音频，请重新生成" }
+                return@withLock CloudGenerationResult(audio, provider, false)
             }
             throw CloudSynthesisException(errors.joinToString("；").ifBlank { "没有可用的联网语音服务" }, failures)
         }
@@ -154,20 +161,17 @@ class CloudSpeechManager(
 
     private fun writeAtomically(target: File, bytes: ByteArray) {
         val temporary = File(target.parentFile, ".${target.name}.${UUID.randomUUID()}.tmp")
-        temporary.outputStream().use { stream ->
-            stream.write(bytes)
-            stream.fd.sync()
-        }
-        runCatching {
-            Files.move(
-                temporary.toPath(),
-                target.toPath(),
-                StandardCopyOption.REPLACE_EXISTING,
-                StandardCopyOption.ATOMIC_MOVE,
-            )
-        }.getOrElse {
-            Files.move(temporary.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
-        }
+        try {
+            temporary.outputStream().use { stream ->
+                stream.write(bytes)
+                stream.fd.sync()
+            }
+            try {
+                Files.move(temporary.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE)
+            } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+                Files.move(temporary.toPath(), target.toPath())
+            }
+        } finally { temporary.delete() }
     }
 
     private fun duration(file: File): Long = runCatching {

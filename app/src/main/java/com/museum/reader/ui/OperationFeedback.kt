@@ -32,6 +32,7 @@ data class OperationFailure(val operation: UserOperation, val message: String)
 internal fun operationMessage(error: Throwable, operation: UserOperation): String {
     val causes = generateSequence(error) { it.cause }.take(8).toList()
     causes.filterIsInstance<CancellationException>().firstOrNull()?.let { throw it }
+    if (error is com.museum.reader.cloud.CloudOutputException) return checkNotNull(error.message)
     if (error is CloudServiceException) return checkNotNull(error.message)
     if (error is CloudSynthesisException && error.failures.isNotEmpty()) return error.failures.joinToString("；") {
         val guidance = operationMessage(it.error, UserOperation.CLOUD)

@@ -2,44 +2,33 @@
 
 [![Android CI](https://github.com/Evangelioonnn/suishenting-android/actions/workflows/android-ci.yml/badge.svg?branch=main)](https://github.com/Evangelioonnn/suishenting-android/actions/workflows/android-ci.yml)
 
-用于讲解词阅读和逐句练习的 Android 应用，支持 Android 8.0（API26）及以上。
+随身听是一款 Android 讲解词阅读和逐句练习应用。你可以导入文稿、逐句录下自己的声音，再按原顺序或练习路线播放。支持 Android 8.0 及以上。
 
-**[下载 APK](https://github.com/Evangelioonnn/suishenting-android/releases/download/v0.9.12-rc.1/Suishenting-v0.9.12-rc.1.apk)** · [版本说明和校验文件](https://github.com/Evangelioonnn/suishenting-android/releases/tag/v0.9.12-rc.1) · [历史版本](https://github.com/Evangelioonnn/suishenting-android/releases)
+**[下载 v0.9.13-rc.1 安装包](https://github.com/Evangelioonnn/suishenting-android/releases/download/v0.9.13-rc.1/Suishenting-v0.9.13-rc.1.apk)** · [版本说明与校验文件](https://github.com/Evangelioonnn/suishenting-android/releases/tag/v0.9.13-rc.1) · [对应源码 ZIP](https://github.com/Evangelioonnn/suishenting-android/releases/download/v0.9.13-rc.1/Suishenting-v0.9.13-rc.1-source.zip) · [历史版本](https://github.com/Evangelioonnn/suishenting-android/releases)
 
-当前为 **v0.9.12-rc.1 本机收敛预发布候选**，应用v0.9.12/code21、Room2，沿用原证书。七轮检查、复现、修复及最后两轮互补复查后，未发现新的可确认、可独立修复的必要缺陷。真实设备/服务验收尚未全部完成，API36历史偶发观察仍保留；详情见[验收摘要](docs/RELEASE_STATUS.md)和[待验条件](docs/KNOWN_ISSUES.md)。
+## 安装与更新
 
-## 安装和更新
+首次使用请下载以 `.apk` 结尾的文件，在手机上打开安装。已有旧版时，请先处理待确认的录音，从设置导出完整备份，再打开 APK 选择“更新”。覆盖安装会沿用原应用数据。若手机提示签名不一致，请保留原应用和数据。
 
-先在旧版导出完整备份、处理待确认录音，再直接覆盖安装APK，**不要卸载旧版或清除应用数据**。更新后抽检常用文稿和既有录音。源码ZIP供开发；若提示签名不兼容，保留原应用和资料后反馈。
+本版沿用原签名，应用版本为 0.9.13（22）。在 Android 9 模拟器从 v0.9.12 实际覆盖更新后，两句相同文字各自的不同录音仍对应原句，两份音频逐文件校验一致。常用手机、耳机及真实云服务还有 15 项待验，本版作为预发布供试用。[验收摘要](docs/RELEASE_STATUS.md)
 
-已在独立模拟器实际完成v0.8.0和公开v0.9.4同证书覆盖升级，合成资料的文稿、稳定句ID、录音SHA、重点、路线、历史、草稿、设置及旧异常数据保持。这些结果不能替代每台真实手机的验收。
+## 本版变化
 
-## 本轮改进
+- **录音**。重新打开录音页可以看到录制时的原句。重复保存或随后到达的放弃操作会核对录音身份。遇到损坏记录时，可在存储维护中先另存原件，再确认隔离，备份会列出遗漏。
+- **编辑与导入**。把正文改回原文再退出，会清理本次产生的旧草稿。导入长文可以翻页校对；旋转屏幕、在大字号横屏下弹出键盘或创建失败后重试，均保留已输入的修订。
+- **云声音**。讯飞或百度已返回声音后，如果手机写盘或入库失败，应用会提示检查存储，结束本次生成。
 
-- 历史、草稿、重点和路线完整参与备份冲突；默认保留本机，另存独立，明确覆盖先留恢复点，预览后变化须重新确认。
-- 修复编号撞号、历史/路线输入校验、设置/编辑/清理并发保护，以及重点和路线位置事务问题。
-- 语音分段保留补充汉字及表情；HTTP先分类并限制响应；新录音确认和旧文件找回使用统一录音身份。
-- 坏音频导出保留原字节并明确警告；平台拒绝播放启动后，下一次明确播放可重试。
+文稿、草稿和本人录音默认保存在手机上。主动生成或试听云声音时，相应文字会发送给所选服务商。云密钥仅在应用中配置，由 Android Keystore 加密保存，完整备份不包含密钥。[使用说明](docs/USAGE.md) · [修改日志](CHANGELOG.md)
 
-继续提供剪贴板/分享/TXT/DOCX导入、独立播放、全文/范围循环、搜索、重点句、路线、本人录音/云缓存/系统声音、独立草稿、最近5版历史、完整备份及存储维护。见[使用说明](docs/USAGE.md)与[修改日志](CHANGELOG.md)。
+## 从源码构建
 
-文稿默认本机保存；主动生成或试听云声音会将对应文字发送给选定的讯飞或百度。云密钥由Android Keystore本机加密保存，不进入备份。只在手机应用配置，不上传聊天或Issues。取消不能撤回提供商已处理的请求，本机计数不等于账单。
+安装 JDK 和 Android SDK。项目使用 Gradle Wrapper 9.5.0、AGP 9.3.1、KSP 2.2.10-2.0.2、Room 2.8.4、SDK 36 和 Build Tools 36.1.0。CI 使用 JDK 25，Java/Kotlin 编译目标为 17。
 
-## 验证与构建
-
-[自动检查](docs/CI.md)会在main源码推送、Pull Request或手动运行时构建Debug/未签名Release，执行现有单元和两套lint，并保存检查报告。CI不自动发布APK，已有v0.9.12-rc.1及原四资产保持。
-
-最终固定包通过44单元、四API各134主回归（536次）、50专项、真实进程中断、两种实际覆盖升级、系统备份/空恢复和实际TalkBack；355张原图复核，双lint各0错误/10保留警告。最后源码/边界与实际流程/异常复查均无新确认必要缺陷；全部29个原失败样例和中间候选本机保留。未以模拟器代替真实声音、云服务或手机性能验收。
-
-SDK36 / Build Tools36.1.0 / Gradle9.5.0 / AGP9.3.1 / Compose插件2.2.10 / KSP2.2.10-2.0.2 / Room2.8.4。验证运行JDK25.0.2，Java/Kotlin输出目标17。配置本机SDK后运行：
-
-```powershell
+~~~powershell
 .\gradlew.bat :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
 .\gradlew.bat :app:assembleRelease :app:lintRelease
-```
+~~~
 
-macOS/Linux使用`./gradlew`。首次构建需要网络，离线需完整缓存。可选Maven缓存由`MUSEUM_READER_LOCAL_MAVEN`或`museumReader.localMaven`指定。Release默认未签名；仓库不含签名私钥，自行不同证书不能覆盖本发布包。
+在 macOS 或 Linux 上使用 `./gradlew`。首次构建需要网络。可选 Maven 缓存由 `MUSEUM_READER_LOCAL_MAVEN` 或 `museumReader.localMaven` 指定。Release 构建默认未签名；覆盖安装已发布的应用需要原证书。[自动检查](docs/CI.md)
 
-公开完整业务、全部跟踪单元及主仪器测试、Wrapper、Room1/2 schema和维护工具。独立补充测试/诊断与原始设备证据由维护者本机保留，来源另有登记。[外部验收操作表](docs/EXTERNAL_ACCEPTANCE_GUIDE.md)保留原15项真实条件。
-
-APK SHA-256：`B55F333FF5750EABFEEC4AA45DF548D92370EFA2878321E69C78D15F6FC366D2`。Release另提供与公开tag一致的源码ZIP、`release-provenance.json`及`SHA256SUMS.txt`；APK与本机最终固定原包一致，未因公开分发重打或重签。
+源码包包含业务源码、跟踪的单元测试及 Android 测试、Gradle Wrapper、Room 1/2 schema 和维护工具。Release 中的 `release-provenance.json` 记录公开提交、文件清单和构建来源，`SHA256SUMS.txt` 提供安装包、源码包及来源清单的校验值。

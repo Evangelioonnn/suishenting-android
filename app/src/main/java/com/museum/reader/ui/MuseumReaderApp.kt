@@ -301,11 +301,12 @@ fun MuseumReaderApp(viewModel: MuseumReaderViewModel) {
                         viewModel.stageAudioExport(path)
                         audioExporter.launch(java.io.File(path).name)
                     },
-                    onPending = viewModel::processPendingFromStorage, snackbar = snackbar)
+                    onPending = viewModel::processPendingFromStorage, onIsolate = viewModel::isolateRecording, snackbar = snackbar)
                 AppPage.RECORDING -> RecordingScreen(
                     ui = ui,
                     onBack = viewModel::closeRecording,
                     onSelect = viewModel::selectRecordingSentence,
+                    onKeepPending = viewModel::keepPendingAndReturn,
                     onStart = { index ->
                         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
                             viewModel.startRecording(index)
@@ -362,7 +363,9 @@ fun MuseumReaderApp(viewModel: MuseumReaderViewModel) {
 
         ui.pendingImport?.let { imported ->
             ImportPreviewDialog(
-                imported = imported,
+                imported = imported, saving = ui.importSaving, error = ui.importError,
+                onTitleChange = { viewModel.editImport(title = it) },
+                onTextChange = { viewModel.editImport(text = it) },
                 onDismiss = viewModel::cancelImport,
                 onConfirm = viewModel::confirmImport,
             )
@@ -740,42 +743,42 @@ private fun DocumentCard(
 
 @Composable
 private fun ImportPreviewDialog(
-    imported: ImportedDocument,
+    imported: ImportedDocument, saving: Boolean, error: String?,
+    onTitleChange: (String) -> Unit,
+    onTextChange: (String) -> Unit,
     onDismiss: () -> Unit,
-    onConfirm: (String, String) -> Unit,
+    onConfirm: () -> Unit,
 ) {
-    var title by remember(imported) { mutableStateOf(imported.title) }
-    var text by remember(imported) { mutableStateOf(imported.text) }
-    val segmented = remember(text) { TextSegmenter.segment(text) }
-    InputDialog(title = "导入前确认", onDismiss = onDismiss, actions = {
-        TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) { Text("取消") }
-        Button(onClick = { onConfirm(title.trim(), text) },
-            enabled = title.isNotBlank() && segmented.sentences.isNotEmpty(),
-            modifier = Modifier.heightIn(min = 48.dp)) { Text("确认导入") }
+    val title = imported.title
+    val text = imported.text
+    var counts by remember(text) { mutableStateOf(imported.counts) }
+    LaunchedEffect(text) {
+        if (counts != null || text.length > 1_000_000) return@LaunchedEffect
+        if (text.length > 20_000) kotlinx.coroutines.delay(150)
+        counts = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            val segmented = TextSegmenter.segment(text)
+            segmented.paragraphs.size to segmented.sentences.size
+        }
+    }
+    InputDialog(title = "导入前确认", onDismiss = onDismiss, pinActions = true, actions = {
+        TextButton(onClick = onDismiss, enabled = !saving, modifier = Modifier.heightIn(min = 48.dp)) { Text("取消") }
+        Button(onClick = onConfirm, enabled = !saving && title.isNotBlank() &&
+            title.length <= 1000 && text.length <= 1_000_000 && (counts?.second ?: 0) > 0,
+            modifier = Modifier.heightIn(min = 48.dp)) { Text(if (saving) "正在保存…" else "确认导入") }
     }) {
-                OutlinedTextField(
-                    value = title,
-                    onValueChange = { title = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text("文稿名称") },
-                )
-                Surface(
-                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
-                    shape = RoundedCornerShape(14.dp),
-                ) {
-                    Text(
-                        "${text.length} 字 · ${segmented.paragraphs.size} 段 · ${segmented.sentences.size} 句",
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
-                        style = MaterialTheme.typography.labelLarge,
-                    )
-                }
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = { text = it },
-                    modifier = Modifier.fillMaxWidth().height(260.dp),
-                    label = { Text("正文预览（可直接修正）") },
-                )
+        OutlinedTextField(value = title, onValueChange = onTitleChange, enabled = !saving,
+            modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("文稿名称") })
+        Text(counts?.let { "${text.length} 字 · ${it.first} 段 · ${it.second} 句" }
+            ?: if (text.length > 1_000_000) "${text.length} 字" else "${text.length} 字 · 正在统计…",
+            style = MaterialTheme.typography.labelLarge)
+        ImportPreviewBody(text, enabled = !saving, onChange = onTextChange)
+        val message = when {
+            title.length > 1000 -> "文稿名称不能超过 1000 字"
+            text.length > 1_000_000 -> "正文超过 100 万字，请拆分后导入"
+            else -> error
+        }
+        if (message != null) Text(message, color = MaterialTheme.colorScheme.error,
+            modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite })
     }
 }
 

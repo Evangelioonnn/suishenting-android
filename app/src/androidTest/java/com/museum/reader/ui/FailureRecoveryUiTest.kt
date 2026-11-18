@@ -19,6 +19,7 @@ import com.museum.reader.data.db.EditorDraftEntity
 import com.museum.reader.data.db.ReaderDatabase
 import com.museum.reader.model.*
 import com.museum.reader.recording.PendingRecording
+import com.museum.reader.recording.writeTestJournal
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import org.json.JSONArray
@@ -364,14 +365,18 @@ class FailureRecoveryUiTest {
         val hash = DocumentRepository.textHash(sentence.text)
         val original = SentenceAudio(UUID.randomUUID().toString(), doc.id, sentence.id, AudioKind.RECORDING, "local", "self", old.path, hash, 1000)
         val pending = PendingRecording(UUID.randomUUID().toString(), doc.id, sentence.id, hash, take.path, 1000, true)
+        val journal = writeTestJournal(context, pending)
         val originalHash = AudioFiles.sha256(old)
         repo.putAudio(original)
         try {
             compose.runOnIdle { vm.openDocument(doc.id) }
             compose.waitUntil(8000) { vm.state.value.currentDocument?.id == doc.id && !vm.state.value.isBusy }
             compose.runOnIdle { vm.openRecording() }
-            compose.waitUntil(8000) { vm.state.value.page == AppPage.RECORDING }
-            compose.runOnIdle { mutableUi().value = vm.state.value.copy(recording = vm.state.value.recording.copy(pending = pending)) }
+            compose.waitUntil(8000) { vm.state.value.recording.pending?.id == pending.id && !vm.state.value.recording.processing }
+            val presented = checkNotNull(vm.state.value.recording.pending)
+            assertEquals(pending.textHash, presented.textHash)
+            assertEquals(File(pending.path).canonicalPath, File(presented.path).canonicalPath)
+            assertEquals(AudioFiles.sha256(take), AudioFiles.sha256(File(presented.path)))
             writeSql("CREATE TRIGGER l03_record_failure BEFORE INSERT ON audio_assets WHEN NEW.id='${pending.id}' BEGIN SELECT RAISE(ABORT, 'private-ui-record'); END")
             sql.beginTransaction()
             try {
@@ -381,7 +386,7 @@ class FailureRecoveryUiTest {
             } finally { sql.endTransaction() }
             compose.waitUntil(8000) { vm.state.value.failure?.operation == UserOperation.RECORD_SAVE }
             assertFalse(vm.state.value.recording.processing)
-            assertEquals(pending, vm.state.value.recording.pending)
+            assertEquals(presented, vm.state.value.recording.pending)
             assertEquals(original.id, repo.latestAudio(sentence.id, AudioKind.RECORDING)!!.id)
             assertEquals(originalHash, AudioFiles.sha256(old))
             assertTrue(take.isFile)
@@ -396,7 +401,7 @@ class FailureRecoveryUiTest {
         } finally {
             writeSql("DROP TRIGGER IF EXISTS l03_record_failure")
             compose.runOnIdle { mutableUi().value = vm.state.value.copy(recording = RecordingUiState()) }
-            cleanup(doc.id); old.delete(); take.delete(); dir.delete()
+            journal.delete(); cleanup(doc.id); old.delete(); take.delete(); dir.delete()
         }
     }
 
